@@ -1,100 +1,87 @@
-# fanctl
+# Fanctl — Smart Fan Control for Apple Silicon Macs
 
-Apple Silicon Mac 智能风扇温控套件 — 功耗前馈 + PI 反馈 + 温柔调速。
-Smart fan control for Apple Silicon Macs — power feedforward + PI feedback + gentle slew-rate limiting.
+**[中文文档 / Chinese README](README.zh-CN.md)**
 
-macOS 默认的风扇曲线以静音优先，90°C 之前风扇几乎不使劲，机身常年温热。fanctl 把控温目标交还给你：默认把 CPU die 压在 **50°C** 附近，插电时机身摸起来接近常温。
+Open-source fan speed control for Apple Silicon MacBooks (M1 / M2 / M3 / M4 / M4 Pro / M4 Max). Keeps your Mac cool and quiet with a self-learning thermal controller — a free alternative to Macs Fan Control and TG Pro.
 
-## 特性
+![Fanctl menu bar](docs/images/menubar.png)
 
-- **功耗前馈**：整机功耗（≈发热量）实时映射基准转速——负载一来风扇先动身，不等温度爬升
-- **PI 自学习**：积分项自动收敛到"刚好压住当前发热量"的平衡转速，稳定不来回抖
-- **温柔调速**：转速每 3 秒最多变 200 rpm，升降都是缓坡，听不到突兀的呼啸起步
-- **离电不介入**：电池供电自动交还系统并停止采样，续航零损耗
-- **失效保护**：守护进程退出/崩溃/被杀，先恢复系统自动控制再走；转速永远钳在硬件许可区间
-- **低成本菜单栏**：收起 15 秒/展开 2 秒双档刷新、文本不变不重绘（对 Liquid Glass 渲染友好）、读状态文件不碰 SMC
-- **温度/转速历史曲线**：10 分~2 小时可选窗口，背景按控制模式着色（蓝=智能调速 / 橙=手动定速 / 灰=系统调度）
-- **双点转速控件**：实心点=实时转速，点/拖出橙色目标环=手动定速，可看着实时点温柔滑向目标
+macOS's default fan curve is tuned for silence: fans barely spin until the chip approaches 90 °C, so the chassis runs warm all day. Fanctl gives the thermal target back to you — by default it holds the CPU die around **50 °C** on AC power, with fans that ramp gently instead of howling.
 
-## 组成
+## Features
 
-| 组件 | 语言 | 职责 |
-|---|---|---|
-| `smcfan` | C | AppleSMC 风扇寄存器读写（探测/定速/交还自动） |
-| `fanctld` | Python | 温控守护进程（root，LaunchDaemon） |
-| `Fanctl.app` | Swift | 菜单栏：显示温度，下拉看转速/功耗/模式，可暂停/恢复/拉满 |
-| `fanctl` | Bash | 命令行入口 |
+- **Power feedforward** — whole-system power draw (≈ heat output) maps directly to a baseline RPM, so fans react to load *before* temperature rises
+- **Self-learning thermal model** — the controller continuously learns your machine's power→RPM→cooling relationship at steady state and persists it; prediction gets better the longer it runs
+- **Power-spike preemption** — a fast/slow power EMA crossover bumps fan speed the moment load jumps (e.g. a build starts), not seconds later
+- **PI feedback with anti-windup** — converges on the exact equilibrium RPM, and glides back down as soon as temperature falls (no fans pinned at max after the load ends)
+- **Gentle slew-rate limiting** — RPM changes are rate-limited (200/400/700 RPM per 3 s tick by urgency; always 150 down), so you never hear a sudden howl
+- **Battery aware** — releases control and stops sampling on battery power; zero battery cost
+- **Fail-safe by design** — any exit path (crash, kill, uninstall) restores macOS's own fan control first; targets are always clamped to hardware min/max
+- **Menu bar app + control panel window** — temperature in the menu bar, a 2-series history chart (temperature + RPM, color-coded by control mode), a dual-dot speed control (solid dot = live RPM, ring = your manual setpoint), and a standalone window for people who hide their menu bar
+- **Rendering-friendly** — 15 s refresh when closed, 2 s when open, text redraws only on change (plays nice with macOS Liquid Glass)
 
-进程间通过两个文件通信：`/tmp/fanctl-status.json`（守护进程每拍写出状态）与 `/tmp/fanctl-cmd`（动词白名单指令：`pause` / `resume` / `max`）。
+## Install
 
-## 依赖
+### Download (recommended)
 
-- Apple Silicon Mac（在 M4 Pro / macOS 26+ 上开发验证；风扇键位 `F%dMd`/`F%dTg` 为 M 系通用）
-- Xcode Command Line Tools（编译 C 与 Swift）
-- [macmon](https://github.com/vladkens/macmon)（温度传感器读取）：`brew install macmon`
+1. Grab `Fanctl-x.y.z.zip` from [Releases](https://github.com/TomEageer/fanctl/releases), unzip
+2. Drag `Fanctl.app` into **Applications**
+3. First open: **right-click → Open** (ad-hoc signed; or `xattr -dr com.apple.quarantine /Applications/Fanctl.app`)
+4. Click **Install** when prompted — one admin password installs the background service; done, it runs at boot
 
-## 安装
+The app bundles everything (SMC tool, control daemon, a copy of [macmon](https://github.com/vladkens/macmon)). No Homebrew or Terminal required.
 
-### 方式一：下载即用（推荐）
-
-1. 从 [Releases](https://github.com/TomEageer/fanctl/releases) 下载 `Fanctl-x.y.z.zip`，解压
-2. 把 `Fanctl.app` 拖进「应用程序」
-3. 首次打开：**右键 → 打开**（ad-hoc 签名，需手动放行一次）
-4. 按提示点「安装」，输入一次管理员密码——后台服务装好即生效，开机自启
-
-App 内置全部组件（smcfan / fanctld / macmon 副本），无需 Homebrew 与命令行。更新后台服务：菜单栏 →「安装 / 更新后台服务…」。
-
-### 方式二：源码构建
+### Build from source
 
 ```bash
 make
-sudo ./install.sh   # 或 make install
+sudo ./install.sh
 ```
 
-卸载（两种方式通用）：`sudo ./uninstall.sh`（会先把风扇交还系统）。
+Uninstall with `sudo ./uninstall.sh` — fans are handed back to macOS before anything is removed.
 
-## 使用
+## How it works
 
-菜单栏点温度数字：看温度/转速/功耗/模式，或一键 暂停 / 恢复 / 拉满。
-
-```bash
-fanctl status    # 状态一览
-fanctl pause     # 暂停温控（交还系统）
-fanctl resume    # 恢复智能温控
-fanctl max       # 风扇拉满
-fanctl log       # 最近日志
-fanctl stop/start
+```
+power telemetry ──feedforward──┐
+                               ├─→ target RPM ──slew limit──→ SMC fan registers
+temperature ──PI (anti-windup)─┘        ↑
+        └── steady-state learning updates the feedforward gain (persisted)
 ```
 
-## 调参
+- `smcfan` (C) talks to the AppleSMC fan registers (`F0Md` / `F0Tg`) — the same channel commercial fan utilities use
+- `fanctld` (Python, root LaunchDaemon) runs the control loop every ~3 s
+- `Fanctl.app` (Swift, AppKit) is the menu bar UI; it only reads status files the daemon writes — UI and SMC never contend
 
-旋钮都在 `daemon/fanctld.py` 顶部：
+## FAQ
 
-```python
-TARGET_TEMP  = 50.0   # 控温目标（想更凉快就调低，想更安静就调高）
-ENGAGE_TEMP  = 48.0   # 超过此温度接管
-RELEASE_TEMP = 43.0   # 低于此温度稳定 ~72s 后交还系统
-KP / KI               # PI 增益
-RATE_LIMIT   = 200.0  # 每拍最大转速变化（越小越温柔）
-```
+**How do I control fan speed on an Apple Silicon MacBook (M1/M2/M3/M4)?**
+Install Fanctl. It exposes three modes: smart control (temperature-targeted), manual fixed speed (drag the dot), and max speed. Or hand control back to macOS at any time.
 
-改完 `sudo ./install.sh` 重装生效。
+**Why is my MacBook hot but the fans stay quiet?**
+Apple's firmware fan curve prioritizes silence and lets the chassis run warm — fans don't spin up hard until the die nears 90 °C. That's by design, and it's exactly what Fanctl changes.
 
-**物理预期管理**：风冷笔记本的散热阻力决定了——轻载（<20W）可稳在 45~52°C；持续重载（编译/推理）风扇顶格也只能压到 55~65°C，这不是软件能改变的。
+**Can it keep my Mac below 50 °C?**
+Under light load, yes. Under sustained heavy load (compiling, local LLMs), physics wins: air cooling settles around 55–65 °C even at max RPM. Fanctl holds the equilibrium honestly instead of screaming at max forever.
 
-## 安全设计
+**Does it drain battery?**
+No — on battery power Fanctl releases fan control and stops sampling entirely.
 
-- 任何退出路径（信号/异常/卸载）都先执行 `smcfan auto` 交还系统
-- 目标转速始终钳在 SMC 报告的 `F%dMn`~`F%dMx` 硬件区间内
-- 芯片自身的硬件过热保护（降频/强制风扇）优先级高于一切软件，fanctl 无法也不会绕过它
-- 指令文件只接受白名单动词；注意 `/tmp/fanctl-cmd` 本机任意用户可写（动词均无害，介意可改路径收紧权限）
+**Is it safe?**
+Every exit path restores system fan control first; targets are clamped to the hardware's own min/max range; the chip's built-in thermal protection always outranks any software. Don't run two fan controllers at once (Fanctl + Macs Fan Control fighting over SMC can temporarily wedge the interface).
 
-## 已知问题
+**Macs Fan Control / TG Pro alternative?**
+Fanctl is free, open-source (MIT), has no subscription, no menu-bar meters burning CPU, and adds closed-loop temperature control with a learning feedforward — not just manual sliders and static curves.
 
-- **不要与 Macs Fan Control / TG Pro 等其他风扇软件同时运行**——两个控制器互相覆写指令，可能把 SMC 接口顶进临时保护状态（读数变 0、写入报 -126；停止争抢后自行恢复，重启必恢复）
-- 守护进程运行时，旁路直接 `smcfan probe` 可能读到 0（SMC 通道并发限制），以 `fanctl status`（读状态文件）为准
-- 菜单栏应用为 ad-hoc 签名（未做 Apple 公证）。从浏览器下载后系统会附加隔离标记，可能弹出"已损坏/不能与此版本 macOS 配合使用"的误导性提示，放行方式任选其一：右键 → 打开；或终端执行 `xattr -dr com.apple.quarantine /Applications/Fanctl.app`
+## Requirements
+
+- Apple Silicon Mac, macOS 13+ (developed and tested on M4 Pro)
+- Building from source needs Xcode Command Line Tools
+
+## Keywords
+
+Mac fan control · Apple Silicon fan speed · M1 M2 M3 M4 fan control · macOS fan curve · MacBook overheating fix · SMC fan · menu bar temperature monitor · Macs Fan Control alternative · TG Pro alternative · smcFanControl Apple Silicon
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE). Bundles [macmon](https://github.com/vladkens/macmon) (MIT) for sensor reading.

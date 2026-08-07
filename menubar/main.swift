@@ -272,61 +272,93 @@ final class FlippedView: NSView { override var isFlipped: Bool { true } }
 final class PanelController: NSObject, NSWindowDelegate {
     weak var app: AppDelegate?
     let window: NSWindow
-    let info = NSTextField(labelWithString: "")
-    let chart = ChartView(frame: NSRect(x: 20, y: 76, width: 320, height: 168))
-    let speedLabel = NSTextField(labelWithString: "转速　--")
-    let speed = SpeedControlView(frame: NSRect(x: 20, y: 282, width: 320, height: 24))
+    let tempBig = NSTextField(labelWithString: "--")
+    let subLine = NSTextField(labelWithString: "--")
+    let chart = ChartView(frame: NSRect(x: 24, y: 96, width: 340, height: 186))
+    let speedTitle = NSTextField(labelWithString: "风扇转速")
+    let speedLabel = NSTextField(labelWithString: "--")
+    let speed = SpeedControlView(frame: NSRect(x: 24, y: 340, width: 340, height: 24))
     let loginBox = NSButton(checkboxWithTitle: "登录时自动启动 Fanctl", target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: "在菜单栏显示图标", target: nil, action: nil)
     var timer: Timer?
 
+    private func sectionLabel(_ text: String, y: CGFloat) -> NSTextField {
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 11, weight: .semibold)
+        l.textColor = .secondaryLabelColor
+        l.frame = NSRect(x: 24, y: y, width: 340, height: 15)
+        return l
+    }
+
+    private func separator(y: CGFloat) -> NSBox {
+        let b = NSBox(frame: NSRect(x: 24, y: y, width: 340, height: 1))
+        b.boxType = .separator
+        return b
+    }
+
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 470),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 560),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
-        window.title = "Fanctl 控制面板"
+        window.title = "Fanctl"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 360, height: 470))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 560))
 
-        info.frame = NSRect(x: 22, y: 14, width: 320, height: 54)
-        info.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
-        root.addSubview(info)
+        // ── 仪表头：大字温度 + 副行 ──
+        tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
+        tempBig.frame = NSRect(x: 24, y: 16, width: 220, height: 48)
+        root.addSubview(tempBig)
+        subLine.font = .systemFont(ofSize: 13)
+        subLine.textColor = .secondaryLabelColor
+        subLine.frame = NSRect(x: 26, y: 64, width: 340, height: 18)
+        root.addSubview(subLine)
+
         root.addSubview(chart)
-        speedLabel.frame = NSRect(x: 22, y: 256, width: 320, height: 18)
-        speedLabel.font = .systemFont(ofSize: 13)
+
+        // ── 转速区 ──
+        root.addSubview(separator(y: 296))
+        root.addSubview(sectionLabel("风扇转速", y: 308))
+        speedLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
+        speedLabel.frame = NSRect(x: 24, y: 326, width: 340, height: 20)
         root.addSubview(speedLabel)
+        speed.frame = NSRect(x: 24, y: 352, width: 340, height: 24)
         speed.onDrag = { [weak self] rpm in
-            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM（松开生效）"
+            self?.speedLabel.stringValue = "\(rpm) RPM · 手动定速（松开生效）"
         }
         speed.onPick = { [weak self] rpm in
             self?.app?.writeCmd("set \(rpm)")
-            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM"
+            self?.speedLabel.stringValue = "\(rpm) RPM · 手动定速"
         }
         root.addSubview(speed)
 
-        var x: CGFloat = 20
-        for (title, verb) in [("智能调速", "resume"), ("最大转速", "max"), ("恢复系统调度", "pause")] {
+        // ── 模式按钮：三等分 ──
+        let titles = [("智能调速", "resume"), ("最大转速", "max"), ("恢复系统调度", "pause")]
+        let bw: CGFloat = (340 - 16) / 3
+        for (i, (title, verb)) in titles.enumerated() {
             let b = NSButton(title: title, target: self, action: #selector(modeButton(_:)))
             b.bezelStyle = .rounded
+            b.controlSize = .large
             b.identifier = NSUserInterfaceItemIdentifier(verb)
-            b.frame = NSRect(x: x, y: 322, width: title.count > 4 ? 130 : 100, height: 28)
-            x += b.frame.width + 6
+            b.frame = NSRect(x: 24 + CGFloat(i) * (bw + 8), y: 392, width: bw, height: 32)
             root.addSubview(b)
         }
 
-        loginBox.frame = NSRect(x: 22, y: 368, width: 320, height: 20)
+        // ── 设置区 ──
+        root.addSubview(separator(y: 444))
+        root.addSubview(sectionLabel("设置", y: 456))
+        loginBox.frame = NSRect(x: 24, y: 478, width: 340, height: 20)
         loginBox.target = self; loginBox.action = #selector(toggleLogin)
-        iconBox.frame = NSRect(x: 22, y: 394, width: 320, height: 20)
+        iconBox.frame = NSRect(x: 24, y: 502, width: 340, height: 20)
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
-        let hint = NSTextField(wrappingLabelWithString: "取消菜单栏图标后，Fanctl 以程序坞应用形式运行，点按程序坞图标可随时回到本面板。开机自启设置于下次登录生效。")
-        hint.frame = NSRect(x: 22, y: 418, width: 320, height: 40)
+        let hint = NSTextField(wrappingLabelWithString: "隐藏菜单栏图标后，Fanctl 转为程序坞应用，点按程序坞图标即可回到本面板；开机自启于下次登录生效。")
+        hint.frame = NSRect(x: 24, y: 526, width: 340, height: 30)
         hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
+        hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
 
         window.contentView = root
@@ -372,7 +404,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         guard let data = FileManager.default.contents(atPath: statusPath),
               let obj = try? JSONSerialization.jsonObject(with: data),
               let j = obj as? [String: Any] else {
-            info.stringValue = "后台服务未运行"
+            tempBig.stringValue = "--"
+            subLine.stringValue = "后台服务未运行"
             return
         }
         let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
@@ -380,13 +413,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
         let power = (j["power"] as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
-        info.stringValue = String(format: "CPU 温度　%.1f °C\n整机功耗　%.1f W\n运行模式　%@",
-                                  temp, power, modeName(mode, rpm: rpm))
+        tempBig.stringValue = String(format: "%.1f °C", temp)
+        subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm))
         if !speed.dragging {
             speed.actual = act > 0 ? act : fanMin
             speed.setpoint = (mode == "custom") ? rpm : nil
             speed.needsDisplay = true
-            speedLabel.stringValue = act > 0 ? "转速　\(Int(act)) RPM" : "转速　--"
+            speedLabel.stringValue = act > 0 ? "\(Int(act)) RPM" : "--"
         }
     }
 }
