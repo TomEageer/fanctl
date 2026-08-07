@@ -96,6 +96,8 @@ let L10N: [String: [String: String]] = [
                      "es": "Ajustes", "fr": "Réglages", "de": "Einstellungen", "ru": "Настройки"],
     "loginStart":   ["en": "Launch Fanctl at login", "zh": "登录时自动启动 Fanctl", "ja": "ログイン時に Fanctl を起動", "ko": "로그인 시 Fanctl 시작",
                      "es": "Iniciar Fanctl al iniciar sesión", "fr": "Lancer Fanctl à la connexion", "de": "Fanctl beim Anmelden starten", "ru": "Запускать Fanctl при входе"],
+    "showPower":    ["en": "Show power in menu bar", "zh": "菜单栏同时显示功耗", "ja": "メニューバーに消費電力も表示", "ko": "메뉴 막대에 전력도 표시",
+                     "es": "Mostrar consumo en la barra", "fr": "Afficher la consommation dans la barre", "de": "Leistung in Menüleiste anzeigen", "ru": "Показывать мощность в строке меню"],
     "showIcon":     ["en": "Show menu bar icon", "zh": "在菜单栏显示图标", "ja": "メニューバーにアイコンを表示", "ko": "메뉴 막대에 아이콘 표시",
                      "es": "Mostrar icono en la barra de menús", "fr": "Afficher l'icône dans la barre de menus", "de": "Symbol in der Menüleiste anzeigen", "ru": "Показывать значок в строке меню"],
     "hint":         ["en": "With the menu bar icon hidden, Fanctl runs as a Dock app — click its Dock icon to reopen this panel. Login item changes take effect at next login.",
@@ -164,7 +166,7 @@ final class ChartView: NSView {
     let windowOptions: [(String, Double)] = [(T("win10"), 600), (T("win30"), 1800), (T("win1h"), 3600), (T("win2h"), 7200)]
     var segmented: NSSegmentedControl!
 
-    private let padL: CGFloat = 30, padR: CGFloat = 34, padT: CGFloat = 26, padB: CGFloat = 36
+    private let padL: CGFloat = 42, padR: CGFloat = 36, padT: CGFloat = 26, padB: CGFloat = 36
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -256,7 +258,7 @@ final class ChartView: NSView {
             g.move(to: NSPoint(x: plot.minX, y: pyT(temp)))
             g.line(to: NSPoint(x: plot.maxX, y: pyT(temp)))
             g.stroke()
-            drawText("\(Int(temp))°", at: NSPoint(x: 4, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
+            drawText("\(Int(temp))°", at: NSPoint(x: 12, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
         }
         for rpm in [0.0, 4000.0, 8000.0] {
             drawText(rpm == 0 ? "0" : String(format: "%.0fk", rpm / 1000),
@@ -380,6 +382,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     var profileSeg: NSSegmentedControl!
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
+    let powerBox = NSButton(checkboxWithTitle: T("showPower"), target: nil, action: nil)
     var timer: Timer?
 
     private func sectionLabel(_ text: String, y: CGFloat) -> NSTextField {
@@ -398,14 +401,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 672),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 698),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
         window.title = "Fanctl"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 672))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 698))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -459,13 +462,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         loginBox.target = self; loginBox.action = #selector(toggleLogin)
         iconBox.frame = NSRect(x: 24, y: 538, width: 340, height: 20)
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
+        powerBox.frame = NSRect(x: 24, y: 562, width: 340, height: 20)
+        powerBox.target = self; powerBox.action = #selector(togglePower)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
+        root.addSubview(powerBox)
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
-        langLabel.frame = NSRect(x: 24, y: 564, width: 110, height: 20)
+        langLabel.frame = NSRect(x: 24, y: 590, width: 110, height: 20)
         root.addSubview(langLabel)
-        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 560, width: 226, height: 26))
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 586, width: 226, height: 26))
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
             pop.addItem(withTitle: code == nil ? T("langSystem") : name)
@@ -477,7 +483,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(pop)
 
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 592, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 618, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -486,12 +492,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 640, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 666, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 640, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 666, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
@@ -521,6 +527,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     func syncChecks() {
         loginBox.state = FileManager.default.fileExists(atPath: AppDelegate.agentPlistPath) ? .on : .off
         iconBox.state = AppDelegate.menuIconShown() ? .on : .off
+        powerBox.state = AppDelegate.showPowerInBar() ? .on : .off
     }
 
     @objc func modeButton(_ sender: NSButton) {
@@ -532,6 +539,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     @objc func toggleIcon() {
         UserDefaults.standard.set(iconBox.state == .on, forKey: "showMenuIcon")
         app?.applyMenuIconVisibility()
+    }
+
+    @objc func togglePower() {
+        UserDefaults.standard.set(powerBox.state == .on, forKey: "showPowerInBar")
+        app?.lastTitle = ""      // 强制下轮重绘
+        app?.refresh()
     }
 
     @objc func pickProfileSeg(_ sender: NSSegmentedControl) {
@@ -675,7 +688,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(fullItem)
         menu.addItem(pauseItem)
         let profItem = NSMenuItem(title: T("profile"), action: nil, keyEquivalent: "")
-        profItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
+        profItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         let profMenu = NSMenu()
         for (code, key) in [("quiet", "pQuiet"), ("balanced", "pBalanced"), ("cool", "pCool")] {
             let m = NSMenuItem(title: T(key), action: #selector(pickProfile(_:)), keyEquivalent: "")
@@ -690,7 +703,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
         menu.addItem(.separator())
         let langItem = NSMenuItem(title: T("language"), action: nil, keyEquivalent: "")
-        langItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+        langItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         let langMenu = NSMenu()
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
@@ -705,10 +718,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         langItem.submenu = langMenu
         menu.addItem(langItem)
         let svcItem = makeItem(T("installSvc"), #selector(installService))
-        svcItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        svcItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         menu.addItem(svcItem)
         let fbItem = makeItem(T("feedback"), #selector(openFeedback))
-        fbItem.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: nil)
+        fbItem.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         menu.addItem(fbItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("quit"), #selector(quit)))
@@ -815,7 +828,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let data = FileManager.default.contents(atPath: statusPath),
               let obj = try? JSONSerialization.jsonObject(with: data),
               let j = obj as? [String: Any] else {
-            setTitle("–°")
+            setBarText(temp: 0, power: 0, stale: true)
             modeRow.title = "\(T("runMode"))　\(T("svcDown"))"
             return
         }
@@ -827,7 +840,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mode  = j["mode"] as? String ?? "?"
         let stale = Date().timeIntervalSince1970 - ts > 90
 
-        setTitle(stale ? "–°" : String(format: "%.0f°", temp))
+        setBarText(temp: temp, power: power, stale: stale)
         tempRow.title  = String(format: "%@　%.1f °C%@", T("cpuTemp"), temp, stale ? T("stale") : "")
         powerRow.title = String(format: "%@　%.1f W", T("sysPower"), power)
         modeRow.title  = "\(T("runMode"))　" + modeName(mode, rpm: rpm)
@@ -851,10 +864,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func setTitle(_ t: String) {
-        if t != lastTitle {
-            item.button?.title = t
-            lastTitle = t
+    static func showPowerInBar() -> Bool {
+        UserDefaults.standard.object(forKey: "showPowerInBar") == nil
+            ? true : UserDefaults.standard.bool(forKey: "showPowerInBar")
+    }
+
+    func setBarText(temp: Double, power: Double, stale: Bool) {
+        let key: String
+        if stale {
+            key = "stale"
+        } else if AppDelegate.showPowerInBar() && power > 0 {
+            key = "\(Int(temp.rounded()))|\(Int(power.rounded()))"
+        } else {
+            key = "\(Int(temp.rounded()))"
+        }
+        guard key != lastTitle else { return }
+        lastTitle = key
+        guard let btn = item.button else { return }
+        if stale {
+            btn.attributedTitle = NSAttributedString()
+            btn.title = "–°"
+            return
+        }
+        if AppDelegate.showPowerInBar() && power > 0 {
+            let para = NSMutableParagraphStyle()
+            para.maximumLineHeight = 10
+            para.minimumLineHeight = 10
+            para.alignment = .center
+            let attr = NSAttributedString(
+                string: "\(Int(temp.rounded()))°\n\(Int(power.rounded()))W",
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium),
+                             .paragraphStyle: para,
+                             .baselineOffset: -4])
+            btn.title = ""
+            btn.attributedTitle = attr
+        } else {
+            btn.attributedTitle = NSAttributedString()
+            btn.title = "\(Int(temp.rounded()))°"
         }
     }
 
