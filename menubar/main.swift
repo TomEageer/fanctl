@@ -9,6 +9,7 @@ let cmdPath     = "/tmp/fanctl-cmd"
 let daemonPlist = "/Library/LaunchDaemons/io.fanctl.daemon.plist"
 let feedbackEmail = "tomeageer@gmail.com"
 let websiteURL    = "https://tomeageer.com"
+let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
 let fanMin = 2317.0
 let fanMax = 7826.0
 let rpmAxisMax = 8000.0
@@ -88,6 +89,22 @@ let L10N: [String: [String: String]] = [
                      "es": "Equilibrado", "fr": "Équilibré", "de": "Ausgewogen", "ru": "Баланс"],
     "pCool":        ["en": "Cool", "zh": "凉爽", "ja": "冷却重視", "ko": "시원함",
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
+    "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
+                     "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "checkUpdate":  ["en": "Check for Updates…", "zh": "检查更新…", "ja": "アップデートを確認…", "ko": "업데이트 확인…",
+                     "es": "Buscar actualizaciones…", "fr": "Rechercher des mises à jour…", "de": "Nach Updates suchen…", "ru": "Проверить обновления…"],
+    "upToDate":     ["en": "You're up to date.", "zh": "已是最新版本。", "ja": "最新バージョンです。", "ko": "최신 버전입니다.",
+                     "es": "Estás actualizado.", "fr": "Vous êtes à jour.", "de": "Auf dem neuesten Stand.", "ru": "У вас последняя версия."],
+    "newVer":       ["en": "New version available", "zh": "发现新版本", "ja": "新しいバージョンがあります", "ko": "새 버전이 있습니다",
+                     "es": "Nueva versión disponible", "fr": "Nouvelle version disponible", "de": "Neue Version verfügbar", "ru": "Доступна новая версия"],
+    "updateNow":    ["en": "Update Now", "zh": "立即更新", "ja": "今すぐ更新", "ko": "지금 업데이트",
+                     "es": "Actualizar ahora", "fr": "Mettre à jour", "de": "Jetzt aktualisieren", "ru": "Обновить"],
+    "updFailed":    ["en": "Update failed — please download manually from GitHub Releases.", "zh": "更新失败，请到 GitHub Releases 手动下载。",
+                     "ja": "更新に失敗しました。GitHub Releases から手動でダウンロードしてください。", "ko": "업데이트 실패 — GitHub Releases에서 수동으로 다운로드하세요.",
+                     "es": "Error al actualizar: descargue manualmente desde GitHub Releases.", "fr": "Échec de la mise à jour — téléchargez manuellement depuis GitHub Releases.",
+                     "de": "Update fehlgeschlagen — bitte manuell von GitHub Releases laden.", "ru": "Не удалось обновить — скачайте вручную из GitHub Releases."],
+    "checkFailed":  ["en": "Could not check for updates (network).", "zh": "检查更新失败（网络问题）。", "ja": "更新を確認できません（ネットワーク）。", "ko": "업데이트 확인 실패(네트워크).",
+                     "es": "No se pudo comprobar (red).", "fr": "Vérification impossible (réseau).", "de": "Prüfung fehlgeschlagen (Netzwerk).", "ru": "Не удалось проверить (сеть)."],
     "language":     ["en": "Language", "zh": "语言", "ja": "言語", "ko": "언어",
                      "es": "Idioma", "fr": "Langue", "de": "Sprache", "ru": "Язык"],
     "langSystem":   ["en": "System Default", "zh": "跟随系统", "ja": "システムに従う", "ko": "시스템 기본값",
@@ -427,14 +444,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 698),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 722),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
         window.title = "Fanctl"
+        if #available(macOS 11.0, *) { window.subtitle = "v\(appVersion)" }
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 698))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 722))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -527,6 +545,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(mail)
         root.addSubview(site)
 
+        let ver = NSTextField(labelWithString: "Fanctl v\(appVersion)")
+        ver.font = .systemFont(ofSize: 11)
+        ver.textColor = .tertiaryLabelColor
+        ver.frame = NSRect(x: 24, y: 692, width: 150, height: 16)
+        root.addSubview(ver)
+        let upd = NSButton(title: T("checkUpdate"), target: self, action: #selector(checkUpd))
+        upd.isBordered = false
+        upd.contentTintColor = .linkColor
+        upd.font = .systemFont(ofSize: 11)
+        upd.frame = NSRect(x: 228, y: 690, width: 140, height: 18)
+        root.addSubview(upd)
+
         window.contentView = root
         window.center()
     }
@@ -582,6 +612,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         app?.applyLanguage(sender.selectedItem?.representedObject as? String)
     }
 
+    @objc func checkUpd() { app?.checkUpdates(interactive: true) }
+
     @objc func openMail() {
         NSWorkspace.shared.open(URL(string: "mailto:\(feedbackEmail)?subject=Fanctl%20Feedback")!)
     }
@@ -612,6 +644,71 @@ final class PanelController: NSObject, NSWindowDelegate {
             speed.setpoint = (mode == "custom") ? rpm : nil
             speed.needsDisplay = true
             speedLabel.stringValue = act > 0 ? "\(Int(act)) RPM" : "--"
+        }
+    }
+}
+
+// MARK: - 更新器（GitHub Releases 原生，无第三方依赖）
+
+enum Updater {
+    static let api = "https://api.github.com/repos/TomEageer/fanctl/releases/latest"
+    static let assetURL = "https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip"
+
+    static func fetchLatest(_ done: @escaping (String?) -> Void) {
+        guard let url = URL(string: api) else { done(nil); return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var tag: String?
+            if let d = data,
+               let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let t = j["tag_name"] as? String {
+                tag = t.hasPrefix("v") ? String(t.dropFirst()) : t
+            }
+            DispatchQueue.main.async { done(tag) }
+        }.resume()
+    }
+
+    static func isNewer(_ remote: String, than local: String) -> Bool {
+        let r = remote.split(separator: ".").map { Int($0) ?? 0 }
+        let l = local.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(r.count, l.count) {
+            let a = i < r.count ? r[i] : 0
+            let b = i < l.count ? l[i] : 0
+            if a != b { return a > b }
+        }
+        return false
+    }
+
+    /// 下载最新包→管理员权限替换 App + 重装后台服务→重启
+    static func perform(_ fail: @escaping () -> Void) {
+        let tmp = NSTemporaryDirectory() + "fanctl-update"
+        DispatchQueue.global().async {
+            let dl = Process()
+            dl.executableURL = URL(fileURLWithPath: "/bin/bash")
+            dl.arguments = ["-c", "set -e; rm -rf '\(tmp)'; mkdir -p '\(tmp)'; curl -sL --max-time 180 -o '\(tmp)/Fanctl.zip' \(assetURL); ditto -x -k '\(tmp)/Fanctl.zip' '\(tmp)'"]
+            try? dl.run()
+            dl.waitUntilExit()
+            guard dl.terminationStatus == 0,
+                  FileManager.default.fileExists(atPath: tmp + "/Fanctl.app") else {
+                DispatchQueue.main.async { fail() }
+                return
+            }
+            DispatchQueue.main.async {
+                let priv = "rm -rf /Applications/Fanctl.app && cp -R '\(tmp)/Fanctl.app' /Applications/ && /bin/bash '/Applications/Fanctl.app/Contents/Resources/install-helper.sh' '/Applications/Fanctl.app/Contents/Resources' && rm -rf '\(tmp)'"
+                let osa = "do shell script \"\(priv.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+                var err: NSDictionary?
+                NSAppleScript(source: osa)?.executeAndReturnError(&err)
+                if let err {
+                    if (err["NSAppleScriptErrorNumber"] as? Int) != -128 { fail() }
+                    return
+                }
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
+                try? p.run()
+                NSApp.terminate(nil)
+            }
         }
     }
 }
@@ -746,6 +843,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let svcItem = makeItem(T("installSvc"), #selector(installService))
         svcItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         menu.addItem(svcItem)
+        let updItem = makeItem(T("checkUpdate"), #selector(menuCheckUpdate))
+        updItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        menu.addItem(updItem)
         let fbItem = makeItem(T("feedback"), #selector(openFeedback))
         fbItem.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
         menu.addItem(fbItem)
@@ -757,10 +857,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         slowTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(slowTimer!, forMode: .common)
 
+        buildMainMenu()
         applyMenuIconVisibility()
         if !FileManager.default.fileExists(atPath: daemonPlist) {
             promptInstall(firstRun: true)
         }
+        // 每日一次静默自动检查
+        let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
+        if Date().timeIntervalSince1970 - last > 86400 {
+            checkUpdates(interactive: false)
+        }
+    }
+
+    /// 顶栏左侧应用主菜单（程序坞模式/面板聚焦时可见）：版本 + 检查更新 + 退出
+    func buildMainMenu() {
+        let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        let ver = NSMenuItem(title: "Fanctl v\(appVersion)", action: nil, keyEquivalent: "")
+        ver.isEnabled = false
+        appMenu.addItem(ver)
+        appMenu.addItem(.separator())
+        let upd = NSMenuItem(title: T("checkUpdate"), action: #selector(menuCheckUpdate), keyEquivalent: "")
+        upd.target = self
+        appMenu.addItem(upd)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: T("quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        NSApp.mainMenu = main
+    }
+
+    @objc func menuCheckUpdate() { checkUpdates(interactive: true) }
+
+    func checkUpdates(interactive: Bool) {
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
+        Updater.fetchLatest { [weak self] tag in
+            guard let self else { return }
+            guard let tag else {
+                if interactive { self.simpleAlert(T("checkFailed")) }
+                return
+            }
+            if Updater.isNewer(tag, than: appVersion) {
+                let a = NSAlert()
+                a.messageText = "\(T("newVer"))：v\(tag)"
+                a.informativeText = "Fanctl v\(appVersion) → v\(tag)"
+                a.addButton(withTitle: T("updateNow"))
+                a.addButton(withTitle: T("laterBtn"))
+                if a.runModal() == .alertFirstButtonReturn {
+                    Updater.perform { self.simpleAlert(T("updFailed")) }
+                }
+            } else if interactive {
+                self.simpleAlert("\(T("upToDate"))（v\(appVersion)）")
+            }
+        }
+    }
+
+    func simpleAlert(_ msg: String) {
+        let a = NSAlert()
+        a.messageText = "Fanctl"
+        a.informativeText = msg
+        a.runModal()
     }
 
     @objc func openPanel() { panel.show() }
@@ -816,11 +973,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script = "do shell script \"\(cmd.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
         var err: NSDictionary?
         NSAppleScript(source: script)?.executeAndReturnError(&err)
-        if err != nil {
+        if let err {
+            // -128 = 用户在密码框点了取消，不算错误，静默返回
+            if (err["NSAppleScriptErrorNumber"] as? Int) == -128 { return }
             let fail = NSAlert()
             fail.messageText = T("failTitle")
             fail.informativeText = T("failMsg")
             fail.runModal()
+        } else {
+            simpleAlert(T("installDone"))
         }
     }
 
