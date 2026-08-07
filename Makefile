@@ -25,8 +25,8 @@ build/Fanctl.app: menubar/main.swift menubar/Info.plist build/smcfan \
 	codesign --force --deep --sign - build/Fanctl.app
 
 dist: all
-	cd build && ditto -c -k --keepParent Fanctl.app Fanctl-$(VERSION).zip
-	@echo "== build/Fanctl-$(VERSION).zip"
+	cd build && ditto -c -k --keepParent Fanctl.app Fanctl-$(VERSION).zip && cp Fanctl-$(VERSION).zip Fanctl.zip
+	@echo "== build/Fanctl-$(VERSION).zip (+ 固定名 Fanctl.zip，发版时两个都上传保持官网直链常青)"
 
 install: all
 	sudo ./install.sh
