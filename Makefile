@@ -1,4 +1,4 @@
-VERSION := 1.9.7
+VERSION := 2.0.0
 
 .PHONY: all install uninstall clean dist
 
@@ -10,12 +10,13 @@ build/smcfan: smc/smcfan.c
 
 # 自包含 App：菜单栏程序 + 后台服务全套组件打进 Resources，
 # 首次启动由 App 引导安装（拖进「应用程序」即可用）
-build/Fanctl.app: menubar/main.swift menubar/Info.plist build/smcfan \
-                  daemon/fanctld.py launchd/io.fanctl.daemon.plist scripts/install-helper.sh
+build/Fanctl.app: menubar/main.swift menubar/Info.plist build/smcfan bin/fanctl uninstall.sh \
+                  daemon/fanctld.py launchd/io.fanctl.daemon.plist launchd/io.fanctl.restore.plist scripts/install-helper.sh
 	@mkdir -p build/Fanctl.app/Contents/MacOS build/Fanctl.app/Contents/Resources
 	swiftc -O -target arm64-apple-macos13.0 -o build/Fanctl.app/Contents/MacOS/fanctl-bar menubar/main.swift
 	cp menubar/Info.plist build/Fanctl.app/Contents/Info.plist
-	cp build/smcfan daemon/fanctld.py launchd/io.fanctl.daemon.plist scripts/install-helper.sh \
+	cp build/smcfan daemon/fanctld.py bin/fanctl uninstall.sh \
+	   launchd/io.fanctl.daemon.plist launchd/io.fanctl.restore.plist scripts/install-helper.sh \
 	   assets/AppIcon.icns \
 	   build/Fanctl.app/Contents/Resources/
 	@if [ -x /opt/homebrew/bin/macmon ]; then \

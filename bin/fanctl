@@ -1,32 +1,65 @@
 #!/bin/bash
-# fanctl — CLI for the fanctl smart fan control suite
-STATUS=/tmp/fanctl-status.json
-case "$1" in
+# fanctl — 命令行入口
+LIBEXEC=/usr/local/libexec/fanctl
+RUNDIR=/usr/local/var/fanctl
+STATUS=$RUNDIR/status.json
+CMD=$RUNDIR/cmd/cmd
+
+send() {   # 命令通道属 root:admin 0770，管理员用户可直接写
+    if ! printf '%s' "$1" > "$CMD" 2>/dev/null; then
+        echo "无法投递命令（需要管理员组权限，或后台服务未安装）"; exit 1
+    fi
+}
+
+case "${1:-}" in
   status)
     if launchctl print system/io.fanctl.daemon >/dev/null 2>&1; then
-      echo "守护进程: 运行中"
+      echo "后台服务: 运行中"
     else
-      echo "守护进程: 未运行"
+      echo "后台服务: 未运行"
     fi
-    if [ -f "$STATUS" ]; then
-      python3 -c "
-import json,time
-d=json.load(open('$STATUS'))
-age=time.time()-d.get('ts',0)
-mode={'manual':'智能调速','auto':'智能调速·待命','paused':'系统调度','max':'全速运行','custom':'手动定速','battery':'电池供电·系统调度'}.get(d['mode'],d['mode'])
-print('温度: %.1f°C   风扇: %s   功耗: %.1fW   模式: %s%s' % (
-    d['temp'], ('%d RPM'%d.get('act',d['rpm'])), d['power'], mode,
-    '   [数据已过期]' if age>90 else ''))"
-    fi
+    [ -f "$STATUS" ] && python3 - "$STATUS" <<'PY'
+import json, sys, time
+d = json.load(open(sys.argv[1]))
+mode = {"manual": "智能调速", "auto": "智能调速·待命", "custom": "手动定速",
+        "paused": "系统调度", "battery": "电池供电·系统调度",
+        "error": "错误"}.get(d["mode"], d["mode"])
+pf = {"quiet": "安静", "balanced": "均衡", "cool": "凉爽"}.get(d.get("profile"), "")
+t = "%.1f°C" % d["temp"] if d.get("temp") is not None else "—"
+w = "%.1fW" % d["power"] if d.get("power") is not None else "—"
+print("温度: %s   风扇: %s RPM   功耗: %s   模式: %s%s%s" % (
+    t, d.get("act", 0), w, mode,
+    " · " + pf if d["mode"] in ("manual", "auto") and pf else "",
+    "   [%s]" % d["err"] if d.get("err") else ""))
+if time.time() - d.get("ts", 0) > 90:
+    print("警告: 状态数据已过期，后台服务可能已停止")
+PY
     tail -3 /var/log/fanctl.log 2>/dev/null
     ;;
-  stop)   sudo launchctl bootout system/io.fanctl.daemon 2>/dev/null; sleep 1; sudo /usr/local/bin/smcfan auto ;;
   start)  sudo launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist ;;
-  pause)  echo pause  > /tmp/fanctl-cmd ;;
-  resume) echo resume > /tmp/fanctl-cmd ;;
-  max)    echo max    > /tmp/fanctl-cmd ;;
-  set)    echo "set $2" > /tmp/fanctl-cmd ;;
-  auto)   sudo /usr/local/bin/smcfan auto ;;
+  stop)   sudo launchctl bootout system/io.fanctl.daemon 2>/dev/null; sleep 1; sudo $LIBEXEC/smcfan auto ;;
+  quiet|balanced|cool) send "profile $1" ;;
+  profile) send "profile ${2:-balanced}" ;;
+  target) send "target ${2:-55}" ;;
+  pause)  send pause ;;
+  resume) send resume ;;
+  max)    send max ;;
+  set)    send "set ${2:-4000}" ;;
+  reset)  send resetmodel ;;
+  auto)   sudo $LIBEXEC/smcfan auto ;;
+  probe)  $LIBEXEC/smcfan probe ;;
   log)    tail -20 /var/log/fanctl.log ;;
-  *) echo "用法: fanctl status|start|stop|pause|resume|max|set <rpm>|auto|log"; exit 2 ;;
+  uninstall) sudo $LIBEXEC/uninstall.sh ;;
+  *) cat <<EOF
+用法: fanctl <命令>
+  status              状态一览
+  quiet|balanced|cool 切换调速性格（即进入智能调速）
+  target <℃>          设置当前性格的目标温度 (40-80)
+  set <rpm> | max     手动定速 / 最大转速
+  pause | resume      交还系统调度 / 恢复智能调速
+  reset               重置自学习模型
+  probe | log         风扇量程 / 最近日志
+  start | stop | auto | uninstall
+EOF
+     exit 2 ;;
 esac

@@ -7,12 +7,16 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/usr/local/libexec/fanctld.py</string>
+        <string>/usr/local/libexec/fanctl/fanctld.py</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>/var/log/fanctl.err</string>
     <key>StandardErrorPath</key>
     <string>/var/log/fanctl.err</string>
 </dict>

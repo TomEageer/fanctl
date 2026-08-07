@@ -6,7 +6,7 @@ Open-source fan speed control for Apple Silicon MacBooks (M1 / M2 / M3 / M4 / M4
 
 ![Fanctl menu bar](docs/images/menubar.png)
 
-macOS's default fan curve is tuned for silence: fans barely spin until the chip approaches 90 °C, so the chassis runs warm all day. Fanctl gives the thermal target back to you — by default it holds the CPU die around **50 °C** on AC power, with fans that ramp gently instead of howling.
+macOS's default fan curve is tuned for silence: fans barely spin until the chip approaches 90 °C, so the chassis runs warm all day. Fanctl gives the thermal target back to you — by default it holds the CPU die around **55 °C** on AC power (configurable per profile), with fans that ramp gently instead of howling.
 
 ## Features
 
@@ -14,10 +14,12 @@ macOS's default fan curve is tuned for silence: fans barely spin until the chip 
 - **Self-learning thermal model** — the controller continuously learns your machine's power→RPM→cooling relationship at steady state and persists it; prediction gets better the longer it runs
 - **Power-spike preemption** — a fast/slow power EMA crossover bumps fan speed the moment load jumps (e.g. a build starts), not seconds later
 - **PI feedback with anti-windup** — converges on the exact equilibrium RPM, and glides back down as soon as temperature falls (no fans pinned at max after the load ends)
-- **Gentle slew-rate limiting** — RPM changes are rate-limited (200/400/700 RPM per 3 s tick by urgency; always 150 down), so you never hear a sudden howl
+- **Gentle slew-rate limiting** — RPM changes are rate-limited per 3 s tick, scaled by urgency and profile (e.g. balanced: 150/300/500 up, 120 down), so you never hear a sudden howl
 - **Battery aware** — releases control and stops sampling on battery power; zero battery cost
-- **Fail-safe by design** — any exit path (crash, kill, uninstall) restores macOS's own fan control first; targets are always clamped to hardware min/max
-- **Menu bar app + control panel window** — temperature in the menu bar, a 2-series history chart (temperature + RPM, color-coded by control mode), a dual-dot speed control (solid dot = live RPM, ring = your manual setpoint), and a standalone window for people who hide their menu bar
+- **Fail-safe by design** — graceful exits restore macOS fan control; a separate boot-time restore daemon covers SIGKILL / panic / power loss; hardware state is reconciled at every startup; targets are clamped to the fan's own probed min/max
+- **Hardened** — executables live in a root-owned directory and are ownership-verified before use; status/history/command files live under a root-owned runtime dir (never `/tmp`); the command channel is a `root:admin 0770` directory plus a strict verb whitelist
+- **Three profiles** — Quiet (58 °C target, hard RPM ceiling — quiet means a noise ceiling, not just a warmer target), Balanced (55 °C), Cool (48 °C); each learns its own feedforward gain
+- **Menu bar app + control panel window** — temperature in the menu bar, a 2-series history chart (temperature + RPM, color-coded by control mode), a dual-dot speed control (solid dot = live RPM, ring = your manual setpoint), a power curve sharing the RPM axis (heat produced vs. heat removed), and a standalone window for people who hide their menu bar
 - **Localized UI** — English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Русский (follows system language)
 - **Rendering-friendly** — 15 s refresh when closed, 2 s when open, text redraws only on change (plays nice with macOS Liquid Glass)
 
@@ -39,7 +41,7 @@ make
 sudo ./install.sh
 ```
 
-Uninstall with `sudo ./uninstall.sh` — fans are handed back to macOS before anything is removed.
+Uninstall from the menu (**Uninstall Fanctl…**) or `sudo ./uninstall.sh` — fans are handed back to macOS before anything is removed.
 
 ## How it works
 
@@ -51,7 +53,7 @@ temperature ──PI (anti-windup)─┘        ↑
 ```
 
 - `smcfan` (C) talks to the AppleSMC fan registers (`F0Md` / `F0Tg`) — the same channel commercial fan utilities use
-- `fanctld` (Python, root LaunchDaemon) runs the control loop every ~3 s
+- `fanctld` (Python, root LaunchDaemon) runs the control loop every ~3 s; requires a working `/usr/bin/python3` (the installer checks and tells you to run `xcode-select --install` if missing)
 - `Fanctl.app` (Swift, AppKit) is the menu bar UI; it only reads status files the daemon writes — UI and SMC never contend
 
 ## FAQ

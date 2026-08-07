@@ -3,16 +3,19 @@
 // files only and never touches SMC directly.
 import AppKit
 
-let statusPath  = "/tmp/fanctl-status.json"
-let historyPath = "/tmp/fanctl-history.jsonl"
-let cmdPath     = "/tmp/fanctl-cmd"
+let runDir      = "/usr/local/var/fanctl"
+let statusPath  = runDir + "/status.json"
+let historyPath = runDir + "/history.jsonl"
+let cmdPath     = runDir + "/cmd/cmd"
+let uninstallTool = "/usr/local/libexec/fanctl/uninstall.sh"
 let daemonPlist = "/Library/LaunchDaemons/io.fanctl.daemon.plist"
 let feedbackEmail = "tomeageer@gmail.com"
 let websiteURL    = "https://tomeageer.com"
 let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
-let fanMin = 2317.0
-let fanMax = 7826.0
-let rpmAxisMax = 8000.0
+var fanMin = 2000.0            // 由守护进程按机型探测后回填
+var fanMax = 7826.0
+var rpmAxisMax = 8000.0
+let wAxisMax = 60.0            // 功耗轴满量程（与转速轴共用绘图区，线性对应）
 
 // MARK: - 本地化
 
@@ -91,6 +94,21 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "noData":       ["en": "—", "zh": "—", "ja": "—", "ko": "—", "es": "—", "fr": "—", "de": "—", "ru": "—"],
+    "uninstall":    ["en": "Uninstall Fanctl…", "zh": "卸载 Fanctl…", "ja": "Fanctl をアンインストール…", "ko": "Fanctl 제거…",
+                     "es": "Desinstalar Fanctl…", "fr": "Désinstaller Fanctl…", "de": "Fanctl deinstallieren…", "ru": "Удалить Fanctl…"],
+    "uninstallMsg": ["en": "This removes the background service, restores system fan control, and deletes Fanctl.",
+                     "zh": "将移除后台服务、把风扇交还系统控制，并删除 Fanctl。",
+                     "ja": "バックグラウンドサービスを削除し、ファン制御をシステムに戻して Fanctl を削除します。",
+                     "ko": "백그라운드 서비스를 제거하고 팬 제어를 시스템에 반환한 뒤 Fanctl을 삭제합니다.",
+                     "es": "Elimina el servicio, devuelve el control del ventilador al sistema y borra Fanctl.",
+                     "fr": "Supprime le service, rend le contrôle du ventilateur au système et efface Fanctl.",
+                     "de": "Entfernt den Dienst, gibt die Lüftersteuerung ans System zurück und löscht Fanctl.",
+                     "ru": "Удаляет службу, возвращает управление вентилятором системе и стирает Fanctl."],
+    "cancel":       ["en": "Cancel", "zh": "取消", "ja": "キャンセル", "ko": "취소",
+                     "es": "Cancelar", "fr": "Annuler", "de": "Abbrechen", "ru": "Отмена"],
+    "updateAvail":  ["en": "Update to v%@", "zh": "更新到 v%@", "ja": "v%@ に更新", "ko": "v%@로 업데이트",
+                     "es": "Actualizar a v%@", "fr": "Mettre à jour vers v%@", "de": "Auf v%@ aktualisieren", "ru": "Обновить до v%@"],
     "checkUpdate":  ["en": "Check for Updates…", "zh": "检查更新…", "ja": "アップデートを確認…", "ko": "업데이트 확인…",
                      "es": "Buscar actualizaciones…", "fr": "Rechercher des mises à jour…", "de": "Nach Updates suchen…", "ru": "Проверить обновления…"],
     "upToDate":     ["en": "You're up to date.", "zh": "已是最新版本。", "ja": "最新バージョンです。", "ko": "최신 버전입니다.",
@@ -160,7 +178,7 @@ let L10N: [String: [String: String]] = [
                      "ru": "Отменено или произошла ошибка. Повторите через «Установить / обновить службу…» в меню."],
 ]
 
-struct Sample { let ts, temp: Double; let rpm: Double; let mode: String; let pf: String }
+struct Sample { let ts, temp: Double; let rpm: Double; let w: Double; let mode: String; let pf: String }
 
 func modeColor(_ mode: String) -> NSColor {
     switch mode {
@@ -232,6 +250,7 @@ final class ChartView: NSView {
                   let t  = (o["temp"] as? NSNumber)?.doubleValue, t > 1 else { return nil }
             return Sample(ts: ts, temp: t,
                           rpm: (o["rpm"] as? NSNumber)?.doubleValue ?? 0,
+                          w: (o["w"] as? NSNumber)?.doubleValue ?? 0,
                           mode: o["mode"] as? String ?? "auto",
                           pf: o["pf"] as? String ?? "balanced")
         }
@@ -247,11 +266,13 @@ final class ChartView: NSView {
             let n = Double(b - a + 1)
             let t = raw[a...b].reduce(0.0) { $0 + $1.temp } / n
             let r = raw[a...b].reduce(0.0) { $0 + $1.rpm } / n
-            return Sample(ts: s.ts, temp: t, rpm: r, mode: s.mode, pf: s.pf)
+            let p = raw[a...b].reduce(0.0) { $0 + $1.w } / n
+            return Sample(ts: s.ts, temp: t, rpm: r, w: p, mode: s.mode, pf: s.pf)
         }
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        NSGraphicsContext.current?.saveGraphicsState()
         let plot = NSRect(x: padL, y: padB, width: bounds.width - padL - padR,
                           height: bounds.height - padT - padB)
         let title = windowOptions.first { $0.1 == windowSec }?.0 ?? ""
@@ -269,12 +290,14 @@ final class ChartView: NSView {
         let t0 = now - windowSec
         var lo = floor((samples.map { $0.temp }.min()! - 3) / 5) * 5
         var hi = ceil((samples.map { $0.temp }.max()! + 3) / 5) * 5
-        if hi - lo < 15 { hi = lo + 15 }
         lo = max(lo, 20); hi = min(hi, 110)
+        if hi - lo < 15 { hi = min(110, lo + 15); lo = hi - 15 }   // 钳位后再保证跨度，防除零
 
         func px(_ ts: Double) -> CGFloat { plot.minX + CGFloat((ts - t0) / (now - t0)) * plot.width }
         func pyT(_ v: Double) -> CGFloat { plot.minY + CGFloat((v - lo) / (hi - lo)) * plot.height }
         func pyR(_ v: Double) -> CGFloat { plot.minY + CGFloat(v / rpmAxisMax) * plot.height }
+        // 功耗与转速共用右轴：产热(W)与散热(RPM)线性对应，两线贴合即"散热跟得上产热"
+        func pyW(_ v: Double) -> CGFloat { plot.minY + CGFloat(min(v, wAxisMax) / wAxisMax) * plot.height }
 
         func bandColor(_ s: Sample) -> NSColor {
             if s.mode == "manual" {
@@ -305,19 +328,31 @@ final class ChartView: NSView {
             g.stroke()
             drawText("\(Int(temp))°", at: NSPoint(x: 12, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
         }
-        for rpm in [0.0, 4000.0, 8000.0] {
+        for (rpm, w) in [(0.0, 0.0), (4000.0, 30.0), (8000.0, 60.0)] {
             drawText(rpm == 0 ? "0" : String(format: "%.0fk", rpm / 1000),
-                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
+                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 1), size: 9,
                      color: NSColor.systemTeal.withAlphaComponent(0.9))
+            drawText(String(format: "%.0fW", w),
+                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 11), size: 8,
+                     color: NSColor.systemPurple.withAlphaComponent(0.85))
         }
         drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 12), size: 9, color: .tertiaryLabelColor)
         drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 12), size: 9, color: .tertiaryLabelColor)
 
+        NSBezierPath(rect: plot).setClip()          // 曲线不越界画到图例/标题上
+        if samples.contains(where: { $0.w > 0 }) {
+            NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
+            let wp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyW($0.w)) }, lineWidth: 1.0)
+            wp.setLineDash([4, 3], count: 2, phase: 0)
+            wp.stroke()
+        }
         NSColor.systemTeal.setStroke()
         splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
 
         NSColor.labelColor.setStroke()
         splinePath(samples.map { NSPoint(x: px($0.ts), y: pyT($0.temp)) }, lineWidth: 1.6).stroke()
+        NSGraphicsContext.current?.restoreGraphicsState()
+        NSGraphicsContext.current?.saveGraphicsState()
     }
 
     /// 抽稀 + Catmull-Rom 样条：把离散点画成处处圆滑的曲线
@@ -375,6 +410,12 @@ final class ChartView: NSView {
         let seg = NSBezierPath(); seg.lineWidth = 2
         seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
         drawText(T("rpm"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        x += 15 + T("rpm").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
+        NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
+        let seg2 = NSBezierPath(); seg2.lineWidth = 2
+        seg2.setLineDash([4, 3], count: 2, phase: 0)
+        seg2.move(to: NSPoint(x: x, y: 10)); seg2.line(to: NSPoint(x: x + 12, y: 10)); seg2.stroke()
+        drawText(T("sysPower"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -666,14 +707,16 @@ final class PanelController: NSObject, NSWindowDelegate {
             subLine.stringValue = T("svcDown")
             return
         }
-        let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
+        let tempOpt  = (j["temp"]  as? NSNumber)?.doubleValue
+        let powerOpt = (j["power"] as? NSNumber)?.doubleValue
         let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
         let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
-        let power = (j["power"] as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
-        tempBig.stringValue = String(format: "%.1f °C", temp)
+        tempBig.stringValue = tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData")
         let profNow = j["profile"] as? String ?? "balanced"
-        subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm, profile: profNow))
+        subLine.stringValue = (powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
+            + modeName(mode, rpm: rpm, profile: profNow)
+            + ((j["err"] as? String).map { "  ⚠️ " + $0 } ?? "")
         for item in smartPop.itemArray.dropFirst() {
             item.state = ((item.representedObject as? String) == profNow) ? .on : .off
         }
@@ -724,6 +767,8 @@ enum Updater {
 
 final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
     static var active: UpdateProgressController?      // 保活 + 防重入
+    private var session: URLSession?
+    private var cancelled = false
     private let window: NSWindow
     private let bar = NSProgressIndicator(frame: NSRect(x: 20, y: 34, width: 280, height: 16))
     private let label = NSTextField(labelWithString: "…")
@@ -744,6 +789,10 @@ final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
         bar.minValue = 0
         bar.maxValue = 100
         bar.isIndeterminate = false
+        let cancel = NSButton(title: T("cancel"), target: self, action: #selector(cancelUpdate))
+        cancel.bezelStyle = .rounded
+        cancel.frame = NSRect(x: 228, y: 2, width: 76, height: 28)
+        root.addSubview(cancel)
         root.addSubview(label)
         root.addSubview(bar)
         window.contentView = root
@@ -758,8 +807,9 @@ final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
         NSApp.activate(ignoringOtherApps: true)
         try? FileManager.default.removeItem(atPath: tmp)
         try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        session.downloadTask(with: URL(string: Updater.assetURL)!).resume()
+        let s = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session = s
+        s.downloadTask(with: URL(string: Updater.assetURL)!).resume()
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
@@ -773,8 +823,17 @@ final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
         }
     }
 
+    @objc func cancelUpdate() {
+        cancelled = true
+        session?.invalidateAndCancel()
+        session = nil
+        window.orderOut(nil)
+        UpdateProgressController.active = nil
+    }
+
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
+        if cancelled { return }
         let zip = tmp + "/Fanctl.zip"
         try? FileManager.default.moveItem(at: location, to: URL(fileURLWithPath: zip))
         DispatchQueue.main.async {
@@ -800,21 +859,25 @@ final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
                 return
             }
             self.label.stringValue = T("updRestart")
+            self.session?.finishTasksAndInvalidate()
+            self.session = nil
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
+            p.arguments = ["-c", "sleep 1; open -n '\(Bundle.main.bundlePath)'"]
             try? p.run()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NSApp.terminate(nil) }
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if error != nil {
+        if error != nil && !cancelled {
             DispatchQueue.main.async { self.finish(failed: true) }
         }
     }
 
     private func finish(failed: Bool) {
+        session?.finishTasksAndInvalidate()      // 不 invalidate 则 session 强引用 delegate 永不释放
+        session = nil
         window.orderOut(nil)
         UpdateProgressController.active = nil
         if failed { onFail() }
@@ -846,7 +909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
             <plist version="1.0"><dict>
             <key>Label</key><string>io.fanctl.menubar</string>
-            <key>ProgramArguments</key><array><string>/Applications/Fanctl.app/Contents/MacOS/fanctl-bar</string></array>
+            <key>ProgramArguments</key><array><string>\(Bundle.main.bundlePath)/Contents/MacOS/fanctl-bar</string></array>
             <key>RunAtLoad</key><true/>
             </dict></plist>
             """
@@ -865,6 +928,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pauseItem: NSMenuItem!
     var fullItem: NSMenuItem!
     var profileItems: [String: NSMenuItem] = [:]
+    var updItem: NSMenuItem!
     var speedLabel: NSTextField!
     let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 2, width: 292, height: 24))
     let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 176))
@@ -946,10 +1010,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(langItem)
         let svcItem = makeItem("⚙️ " + T("installSvc"), #selector(installService))
         menu.addItem(svcItem)
-        let updItem = makeItem("🔄 " + T("checkUpdate"), #selector(menuCheckUpdate))
+        updItem = makeItem("🔄 " + T("checkUpdate"), #selector(menuCheckUpdate))
         menu.addItem(updItem)
         let fbItem = makeItem("✉️ " + T("feedback"), #selector(openFeedback))
         menu.addItem(fbItem)
+        menu.addItem(makeItem("🗑️ " + T("uninstall"), #selector(uninstallApp)))
         menu.addItem(.separator())
         menu.addItem(makeItem(T("quit"), #selector(quit)))
         item.menu = menu
@@ -1000,6 +1065,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
             if Updater.isNewer(tag, than: appVersion) {
+                self.updItem?.title = String(format: T("updateAvail"), tag)
+                guard interactive else { return }      // 静默检查只改菜单标题，不抢焦点弹框
                 let a = NSAlert()
                 a.messageText = "\(T("newVer"))：v\(tag)"
                 a.informativeText = "Fanctl v\(appVersion) → v\(tag)"
@@ -1041,9 +1108,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 界面语言在启动时固化，切换后自动重启应用生效
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
+        p.arguments = ["-c", "sleep 1; open -n '\(Bundle.main.bundlePath)'"]
         try? p.run()
         NSApp.terminate(nil)
+    }
+
+    @objc func uninstallApp() {
+        let a = NSAlert()
+        a.messageText = T("uninstall")
+        a.informativeText = T("uninstallMsg")
+        a.alertStyle = .warning
+        a.addButton(withTitle: T("uninstall"))
+        a.addButton(withTitle: T("cancel"))
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let script = "do shell script \"/bin/bash '\(uninstallTool)'\" with administrator privileges"
+        var err: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&err)
+        if err == nil { NSApp.terminate(nil) }
+        else if (err?["NSAppleScriptErrorNumber"] as? Int) != -128 { simpleAlert(T("updFailed")) }
     }
 
     @objc func openFeedback() {
@@ -1120,19 +1202,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             modeRow.title = "\(T("runMode"))　\(T("svcDown"))"
             return
         }
-        let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
+        let tempOpt  = (j["temp"]  as? NSNumber)?.doubleValue     // 电池模式为 null
+        let powerOpt = (j["power"] as? NSNumber)?.doubleValue
         let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
         let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
-        let power = (j["power"] as? NSNumber)?.doubleValue ?? 0
         let ts    = (j["ts"]    as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
-        let stale = Date().timeIntervalSince1970 - ts > 90
+        let stale = Date().timeIntervalSince1970 - ts > 90 || tempOpt == nil
+        if let mn = (j["fanMin"] as? NSNumber)?.doubleValue,
+           let mx = (j["fanMax"] as? NSNumber)?.doubleValue, mx > mn {
+            fanMin = mn; fanMax = mx; rpmAxisMax = (mx / 1000).rounded(.up) * 1000
+        }
+        let temp = tempOpt ?? 0, power = powerOpt ?? 0
 
         setBarText(temp: temp, power: power, stale: stale)
-        tempRow.title  = String(format: "%@　%.1f °C%@", T("cpuTemp"), temp, stale ? T("stale") : "")
-        powerRow.title = String(format: "%@　%.1f W", T("sysPower"), power)
+        tempRow.title  = T("cpuTemp") + "　" + (tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
+            + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : "")
+        powerRow.title = T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData"))
+        if let e = j["err"] as? String { modeRow.title = "⚠️ " + e }
         let profNow0 = j["profile"] as? String ?? "balanced"
-        modeRow.title  = "\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0)
+        if j["err"] == nil || j["err"] is NSNull {
+            modeRow.title = "\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0)
+        }
 
         smartItem.state = (mode == "manual" || mode == "auto") ? .on : .off
         pauseItem.state = (mode == "paused") ? .on : .off
