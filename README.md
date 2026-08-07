@@ -18,6 +18,7 @@ macOS's default fan curve is tuned for silence: fans barely spin until the chip 
 - **Battery aware** — releases control and stops sampling on battery power; zero battery cost
 - **Fail-safe by design** — any exit path (crash, kill, uninstall) restores macOS's own fan control first; targets are always clamped to hardware min/max
 - **Menu bar app + control panel window** — temperature in the menu bar, a 2-series history chart (temperature + RPM, color-coded by control mode), a dual-dot speed control (solid dot = live RPM, ring = your manual setpoint), and a standalone window for people who hide their menu bar
+- **Localized UI** — English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Русский (follows system language)
 - **Rendering-friendly** — 15 s refresh when closed, 2 s when open, text redraws only on change (plays nice with macOS Liquid Glass)
 
 ## Install
@@ -81,6 +82,10 @@ Fanctl is free, open-source (MIT), has no subscription, no menu-bar meters burni
 ## Keywords
 
 Mac fan control · Apple Silicon fan speed · M1 M2 M3 M4 fan control · macOS fan curve · MacBook overheating fix · SMC fan · menu bar temperature monitor · Macs Fan Control alternative · TG Pro alternative · smcFanControl Apple Silicon
+
+## Contact
+
+Feedback / bug reports: [tomeageer@gmail.com](mailto:tomeageer@gmail.com) · [tomeageer.com](https://tomeageer.com) · [GitHub Issues](https://github.com/TomEageer/fanctl/issues)
 
 ## License
 

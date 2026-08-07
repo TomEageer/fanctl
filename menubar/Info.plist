@@ -9,11 +9,13 @@
     <key>CFBundleExecutable</key>
     <string>fanctl-bar</string>
     <key>CFBundleVersion</key>
-    <string>1.5.1</string>
+    <string>1.6.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.5.1</string>
+    <string>1.6.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleLocalizations</key>
+    <array><string>en</string><string>zh-Hans</string><string>ja</string><string>ko</string><string>es</string><string>fr</string><string>de</string><string>ru</string></array>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSUIElement</key>
