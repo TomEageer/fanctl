@@ -281,6 +281,9 @@ def write_status(mode):
             "profile": state["profile"],
             "fanMin": int(state["fan_min"]), "fanMax": int(state["fan_max"]),
             "fans": state["fans"], "err": state["err"],
+            # UI 用它把功耗折合成"守住当前目标温度所需的转速"，两线才可直接比较
+            "ffGain": round(ff_gain() * prof()["ff_scale"], 1),
+            "target": prof()["target"],
             "ts": time.time(),
         }
         write_file_safe(STATUS + ".tmp", json.dumps(payload))

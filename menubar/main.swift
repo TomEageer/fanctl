@@ -15,7 +15,7 @@ let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionS
 var fanMin = 2000.0            // 由守护进程按机型探测后回填
 var fanMax = 7826.0
 var rpmAxisMax = 8000.0
-let wAxisMax = 60.0            // 功耗轴满量程（与转速轴共用绘图区，线性对应）
+var ffGain = 110.0             // 由守护进程回填：每瓦发热需要多少转速（本机学习值）
 
 // MARK: - 本地化
 
@@ -94,6 +94,9 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "powerLegend":  ["en": "Heat (as RPM needed)", "zh": "产热（折合所需转速）", "ja": "発熱（必要回転数換算）",
+                     "ko": "발열(필요 회전수 환산)", "es": "Calor (RPM necesarias)", "fr": "Chaleur (RPM requis)",
+                     "de": "Wärme (nötige Drehzahl)", "ru": "Тепло (нужные обороты)"],
     "noData":       ["en": "—", "zh": "—", "ja": "—", "ko": "—", "es": "—", "fr": "—", "de": "—", "ru": "—"],
     "uninstall":    ["en": "Uninstall Fanctl…", "zh": "卸载 Fanctl…", "ja": "Fanctl をアンインストール…", "ko": "Fanctl 제거…",
                      "es": "Desinstalar Fanctl…", "fr": "Désinstaller Fanctl…", "de": "Fanctl deinstallieren…", "ru": "Удалить Fanctl…"],
@@ -296,8 +299,9 @@ final class ChartView: NSView {
         func px(_ ts: Double) -> CGFloat { plot.minX + CGFloat((ts - t0) / (now - t0)) * plot.width }
         func pyT(_ v: Double) -> CGFloat { plot.minY + CGFloat((v - lo) / (hi - lo)) * plot.height }
         func pyR(_ v: Double) -> CGFloat { plot.minY + CGFloat(v / rpmAxisMax) * plot.height }
-        // 功耗与转速共用右轴：产热(W)与散热(RPM)线性对应，两线贴合即"散热跟得上产热"
-        func pyW(_ v: Double) -> CGFloat { plot.minY + CGFloat(min(v, wAxisMax) / wAxisMax) * plot.height }
+        // 功耗折合成"守住目标温度所需转速"（按本机学习到的前馈增益标定）：
+        // 紫线高于青线 = 当前转速压不住这些热量，温度会涨；青线在上 = 温度会回落
+        func pyW(_ v: Double) -> CGFloat { pyR(min(fanMin + max(0, v - 8) * ffGain, rpmAxisMax)) }
 
         func bandColor(_ s: Sample) -> NSColor {
             if s.mode == "manual" {
@@ -328,13 +332,17 @@ final class ChartView: NSView {
             g.stroke()
             drawText("\(Int(temp))°", at: NSPoint(x: 12, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
         }
-        for (rpm, w) in [(0.0, 0.0), (4000.0, 30.0), (8000.0, 60.0)] {
+        for rpm in [0.0, 4000.0, 8000.0] {
             drawText(rpm == 0 ? "0" : String(format: "%.0fk", rpm / 1000),
-                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 1), size: 9,
+                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
                      color: NSColor.systemTeal.withAlphaComponent(0.9))
-            drawText(String(format: "%.0fW", w),
-                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 11), size: 8,
-                     color: NSColor.systemPurple.withAlphaComponent(0.85))
+            // 同一高度对应的功耗（按本机热模型折算）
+            let w = (rpm - fanMin) / max(ffGain, 1) + 8
+            if w > 8 {
+                drawText(String(format: "%.0fW", w),
+                         at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 14), size: 8,
+                         color: NSColor.systemPurple.withAlphaComponent(0.85))
+            }
         }
         drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 12), size: 9, color: .tertiaryLabelColor)
         drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 12), size: 9, color: .tertiaryLabelColor)
@@ -415,7 +423,7 @@ final class ChartView: NSView {
         let seg2 = NSBezierPath(); seg2.lineWidth = 2
         seg2.setLineDash([4, 3], count: 2, phase: 0)
         seg2.move(to: NSPoint(x: x, y: 10)); seg2.line(to: NSPoint(x: x + 12, y: 10)); seg2.stroke()
-        drawText(T("sysPower"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        drawText(T("powerLegend"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -1209,6 +1217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let ts    = (j["ts"]    as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
         let stale = Date().timeIntervalSince1970 - ts > 90 || tempOpt == nil
+        if let g = (j["ffGain"] as? NSNumber)?.doubleValue, g > 1 { ffGain = g }
         if let mn = (j["fanMin"] as? NSNumber)?.doubleValue,
            let mx = (j["fanMax"] as? NSNumber)?.doubleValue, mx > mn {
             fanMin = mn; fanMax = mx; rpmAxisMax = (mx / 1000).rounded(.up) * 1000
