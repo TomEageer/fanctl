@@ -1,4 +1,4 @@
-VERSION := 1.4.3
+VERSION := 1.5.0
 
 .PHONY: all install uninstall clean dist
 
@@ -16,6 +16,7 @@ build/Fanctl.app: menubar/main.swift menubar/Info.plist build/smcfan \
 	swiftc -O -target arm64-apple-macos13.0 -o build/Fanctl.app/Contents/MacOS/fanctl-bar menubar/main.swift
 	cp menubar/Info.plist build/Fanctl.app/Contents/Info.plist
 	cp build/smcfan daemon/fanctld.py launchd/io.fanctl.daemon.plist scripts/install-helper.sh \
+	   assets/AppIcon.icns \
 	   build/Fanctl.app/Contents/Resources/
 	@if [ -x /opt/homebrew/bin/macmon ]; then \
 	    cp /opt/homebrew/bin/macmon build/Fanctl.app/Contents/Resources/macmon; \

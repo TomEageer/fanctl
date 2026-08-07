@@ -32,6 +32,7 @@ LOG     = "/var/log/fanctl.log"
 STATUS  = "/tmp/fanctl-status.json"
 CMD     = "/tmp/fanctl-cmd"
 HISTORY = "/tmp/fanctl-history.jsonl"
+MODEL   = "/usr/local/var/fanctl/model.json"   # 自学习热模型（持久化）
 HIST_KEEP = 2400          # 修剪后保留的样本数（约 2 小时 @3s）
 HIST_TRIM_AT = 4800       # 超过此行数触发修剪
 
@@ -48,11 +49,41 @@ RATE_UP_3    = 700.0   # 升速斜率：偏差 >15°C（紧急态果断压制）
 RATE_DOWN    = 150.0   # 降速斜率：始终温柔
 WRITE_BAND   = 75.0
 POWER_HOLD   = 60.0    # 功耗读数失效时沿用上一有效值的时长（秒）
+FF_GAIN_MIN  = 60.0    # 自学习前馈增益下限（RPM/W）
+FF_GAIN_MAX  = 200.0   # 上限
+KW_SPIKE     = 45.0    # 功耗突增预压制：每瓦突增额外 +45 RPM
+LEARN_RATE   = 0.02    # 稳态时积分向前馈增益的迁移速率
 RELEASE_HOLD = 24
 BATT_POLL    = 30
 
 state = {"manual": False, "rpm": 0.0, "written": 0.0, "integ": 0.0, "cool": 0,
-         "override": None, "temp": 0.0, "power": 0.0}
+         "override": None, "temp": 0.0, "power": 0.0,
+         "ff_gain": 110.0, "w_slow": 0.0, "temps": [], "model_dirty": False,
+         "model_saved": 0.0}
+
+
+def load_model():
+    try:
+        with open(MODEL) as f:
+            m = json.load(f)
+        state["ff_gain"] = max(FF_GAIN_MIN, min(FF_GAIN_MAX, float(m.get("ff_gain", 110.0))))
+        log("model loaded: ff_gain=%.1f rpm/W" % state["ff_gain"])
+    except (OSError, ValueError):
+        pass
+
+
+def save_model(force=False):
+    now = time.time()
+    if not force and (not state["model_dirty"] or now - state["model_saved"] < 300):
+        return
+    try:
+        os.makedirs(os.path.dirname(MODEL), exist_ok=True)
+        with open(MODEL, "w") as f:
+            json.dump({"ff_gain": round(state["ff_gain"], 2), "updated": now}, f)
+        state["model_dirty"] = False
+        state["model_saved"] = now
+    except OSError:
+        pass
 macmon_proc = None
 
 
@@ -113,7 +144,7 @@ def read_power_watts():
 def feedforward_rpm(watts):
     if watts is None:
         return FAN_MIN
-    return min(FAN_MAX, FAN_MIN + max(0.0, watts - 8.0) * 110.0)
+    return min(FAN_MAX, FAN_MIN + max(0.0, watts - 8.0) * state["ff_gain"])
 
 
 def write_status(mode):
@@ -260,7 +291,28 @@ def control_tick(temp):
 
     err = temp - TARGET_TEMP
     state["integ"] = max(-1500.0, min(FAN_MAX - FAN_MIN, state["integ"] + KI * err))
-    cmd_raw = feedforward_rpm(watts) + KP * err + state["integ"]
+
+    # 功耗突增预压制：功耗快线越过慢线的瞬间提前提转速，不等温度上来
+    w = watts or 0.0
+    if state["w_slow"] <= 0:
+        state["w_slow"] = w
+    spike = max(0.0, w - state["w_slow"]) * KW_SPIKE
+    state["w_slow"] = state["w_slow"] * 0.90 + w * 0.10
+
+    # 稳态自学习：温度平稳且输出未贴边时，积分携带的常差缓慢迁入前馈增益，
+    # 让"功耗→所需转速"的映射长期贴合本机散热效率（学习结果持久化）
+    state["temps"] = (state["temps"] + [temp])[-8:]
+    if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
+            and FAN_MIN + 60 < state["rpm"] < FAN_MAX - 60 and w > 10):
+        corr = state["integ"] / max(w - 8.0, 2.0)
+        new_gain = max(FF_GAIN_MIN, min(FF_GAIN_MAX, state["ff_gain"] + LEARN_RATE * corr))
+        if abs(new_gain - state["ff_gain"]) > 0.005:
+            state["ff_gain"] = new_gain
+            state["integ"] *= 0.985
+            state["model_dirty"] = True
+    save_model()
+
+    cmd_raw = feedforward_rpm(watts) + spike + KP * err + state["integ"]
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
     if cmd_raw > FAN_MAX:
@@ -290,6 +342,7 @@ def control_tick(temp):
 def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
+    load_model()
     log("fanctld started (target=%s engage>%s release<%s up<=%s/%s/%s down<=%s rpm/tick)" %
         (TARGET_TEMP, ENGAGE_TEMP, RELEASE_TEMP, int(RATE_UP_1), int(RATE_UP_2), int(RATE_UP_3), int(RATE_DOWN)))
     try:
@@ -316,6 +369,7 @@ def main():
             control_tick(temp)
     finally:
         stop_macmon()
+        save_model(force=True)
         set_auto("(daemon exit)")
         log("fanctld stopped")
 

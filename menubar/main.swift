@@ -264,10 +264,177 @@ final class SpeedControlView: NSView {
     }
 }
 
+
+// MARK: - 控制面板窗口（不依赖菜单栏图标的完整控制入口）
+
+final class FlippedView: NSView { override var isFlipped: Bool { true } }
+
+final class PanelController: NSObject, NSWindowDelegate {
+    weak var app: AppDelegate?
+    let window: NSWindow
+    let info = NSTextField(labelWithString: "")
+    let chart = ChartView(frame: NSRect(x: 20, y: 76, width: 320, height: 168))
+    let speedLabel = NSTextField(labelWithString: "转速　--")
+    let speed = SpeedControlView(frame: NSRect(x: 20, y: 282, width: 320, height: 24))
+    let loginBox = NSButton(checkboxWithTitle: "登录时自动启动 Fanctl", target: nil, action: nil)
+    let iconBox  = NSButton(checkboxWithTitle: "在菜单栏显示图标", target: nil, action: nil)
+    var timer: Timer?
+
+    init(app: AppDelegate) {
+        self.app = app
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 470),
+                          styleMask: [.titled, .closable, .miniaturizable],
+                          backing: .buffered, defer: false)
+        super.init()
+        window.title = "Fanctl 控制面板"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 360, height: 470))
+
+        info.frame = NSRect(x: 22, y: 14, width: 320, height: 54)
+        info.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        root.addSubview(info)
+        root.addSubview(chart)
+        speedLabel.frame = NSRect(x: 22, y: 256, width: 320, height: 18)
+        speedLabel.font = .systemFont(ofSize: 13)
+        root.addSubview(speedLabel)
+        speed.onDrag = { [weak self] rpm in
+            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM（松开生效）"
+        }
+        speed.onPick = { [weak self] rpm in
+            self?.app?.writeCmd("set \(rpm)")
+            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM"
+        }
+        root.addSubview(speed)
+
+        var x: CGFloat = 20
+        for (title, verb) in [("智能调速", "resume"), ("最大转速", "max"), ("恢复系统调度", "pause")] {
+            let b = NSButton(title: title, target: self, action: #selector(modeButton(_:)))
+            b.bezelStyle = .rounded
+            b.identifier = NSUserInterfaceItemIdentifier(verb)
+            b.frame = NSRect(x: x, y: 322, width: title.count > 4 ? 130 : 100, height: 28)
+            x += b.frame.width + 6
+            root.addSubview(b)
+        }
+
+        loginBox.frame = NSRect(x: 22, y: 368, width: 320, height: 20)
+        loginBox.target = self; loginBox.action = #selector(toggleLogin)
+        iconBox.frame = NSRect(x: 22, y: 394, width: 320, height: 20)
+        iconBox.target = self; iconBox.action = #selector(toggleIcon)
+        root.addSubview(loginBox)
+        root.addSubview(iconBox)
+        let hint = NSTextField(wrappingLabelWithString: "取消菜单栏图标后，Fanctl 以程序坞应用形式运行，点按程序坞图标可随时回到本面板。开机自启设置于下次登录生效。")
+        hint.frame = NSRect(x: 22, y: 418, width: 320, height: 40)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        root.addSubview(hint)
+
+        window.contentView = root
+        window.center()
+    }
+
+    func show() {
+        syncChecks()
+        refresh()
+        chart.reload()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        timer?.invalidate()
+        timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            self?.refresh()
+            self?.chart.reload()
+        }
+        RunLoop.main.add(timer!, forMode: .common)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func syncChecks() {
+        loginBox.state = FileManager.default.fileExists(atPath: AppDelegate.agentPlistPath) ? .on : .off
+        iconBox.state = AppDelegate.menuIconShown() ? .on : .off
+    }
+
+    @objc func modeButton(_ sender: NSButton) {
+        if let verb = sender.identifier?.rawValue { app?.writeCmd(verb) }
+    }
+
+    @objc func toggleLogin() { AppDelegate.setLaunchAtLogin(loginBox.state == .on) }
+
+    @objc func toggleIcon() {
+        UserDefaults.standard.set(iconBox.state == .on, forKey: "showMenuIcon")
+        app?.applyMenuIconVisibility()
+    }
+
+    func refresh() {
+        guard let data = FileManager.default.contents(atPath: statusPath),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let j = obj as? [String: Any] else {
+            info.stringValue = "后台服务未运行"
+            return
+        }
+        let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
+        let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
+        let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
+        let power = (j["power"] as? NSNumber)?.doubleValue ?? 0
+        let mode  = j["mode"] as? String ?? "?"
+        info.stringValue = String(format: "CPU 温度　%.1f °C\n整机功耗　%.1f W\n运行模式　%@",
+                                  temp, power, modeName(mode, rpm: rpm))
+        if !speed.dragging {
+            speed.actual = act > 0 ? act : fanMin
+            speed.setpoint = (mode == "custom") ? rpm : nil
+            speed.needsDisplay = true
+            speedLabel.stringValue = act > 0 ? "转速　\(Int(act)) RPM" : "转速　--"
+        }
+    }
+}
+
 // MARK: - 应用主体
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem!
+    lazy var panel = PanelController(app: self)
+
+    static var agentPlistPath: String {
+        NSHomeDirectory() + "/Library/LaunchAgents/io.fanctl.menubar.plist"
+    }
+    static func menuIconShown() -> Bool {
+        UserDefaults.standard.object(forKey: "showMenuIcon") == nil
+            ? true : UserDefaults.standard.bool(forKey: "showMenuIcon")
+    }
+    static func setLaunchAtLogin(_ on: Bool) {
+        let fm = FileManager.default
+        if on {
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>Label</key><string>io.fanctl.menubar</string>
+            <key>ProgramArguments</key><array><string>/Applications/Fanctl.app/Contents/MacOS/fanctl-bar</string></array>
+            <key>RunAtLoad</key><true/>
+            </dict></plist>
+            """
+            try? fm.createDirectory(atPath: NSHomeDirectory() + "/Library/LaunchAgents",
+                                    withIntermediateDirectories: true)
+            try? plist.write(toFile: agentPlistPath, atomically: true, encoding: .utf8)
+        } else {
+            try? fm.removeItem(atPath: agentPlistPath)
+        }
+    }
+
+    func applyMenuIconVisibility() {
+        let show = AppDelegate.menuIconShown()
+        item.isVisible = show
+        NSApp.setActivationPolicy(show ? .accessory : .regular)
+        if !show { panel.show() }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        panel.show()
+        return true
+    }
     var slowTimer: Timer?
     var fastTimer: Timer?
     var fastTicks = 0
@@ -325,6 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(fullItem)
         menu.addItem(pauseItem)
         menu.addItem(.separator())
+        menu.addItem(makeItem("控制面板…", #selector(openPanel)))
         menu.addItem(makeItem("安装 / 更新后台服务…", #selector(installService)))
         menu.addItem(makeItem("退出 Fanctl", #selector(quit)))
         item.menu = menu
@@ -333,10 +501,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         slowTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(slowTimer!, forMode: .common)
 
+        applyMenuIconVisibility()
         if !FileManager.default.fileExists(atPath: daemonPlist) {
             promptInstall(firstRun: true)
         }
     }
+
+    @objc func openPanel() { panel.show() }
 
     // MARK: 后台服务安装（内嵌于 App，首启一次授权）
 
