@@ -15,11 +15,18 @@ let rpmAxisMax = 8000.0
 
 // MARK: - 本地化
 
+let langOverrideKey = "uiLangOverride"
 let uiLang: String = {
+    if let pick = UserDefaults.standard.string(forKey: langOverrideKey) { return pick }
     let p = Locale.preferredLanguages.first ?? "en"
     for c in ["zh", "ja", "ko", "es", "fr", "de", "ru"] where p.hasPrefix(c) { return c }
     return "en"
 }()
+// (语言代码, 母语名) — nil 代表跟随系统
+let langChoices: [(String?, String)] = [
+    (nil, ""), ("en", "English"), ("zh", "简体中文"), ("ja", "日本語"), ("ko", "한국어"),
+    ("es", "Español"), ("fr", "Français"), ("de", "Deutsch"), ("ru", "Русский"),
+]
 
 func T(_ key: String) -> String {
     L10N[key]?[uiLang] ?? L10N[key]?["en"] ?? key
@@ -73,6 +80,10 @@ let L10N: [String: [String: String]] = [
                      "es": "Servicio no activo", "fr": "Service inactif", "de": "Dienst läuft nicht", "ru": "Служба не запущена"],
     "stale":        ["en": " (stale)", "zh": "（数据过期）", "ja": "（データ期限切れ）", "ko": " (오래된 데이터)",
                      "es": " (obsoleto)", "fr": " (périmé)", "de": " (veraltet)", "ru": " (устарело)"],
+    "language":     ["en": "Language", "zh": "语言", "ja": "言語", "ko": "언어",
+                     "es": "Idioma", "fr": "Langue", "de": "Sprache", "ru": "Язык"],
+    "langSystem":   ["en": "System Default", "zh": "跟随系统", "ja": "システムに従う", "ko": "시스템 기본값",
+                     "es": "Predeterminado del sistema", "fr": "Défaut du système", "de": "Systemstandard", "ru": "Как в системе"],
     "settings":     ["en": "Settings", "zh": "设置", "ja": "設定", "ko": "설정",
                      "es": "Ajustes", "fr": "Réglages", "de": "Einstellungen", "ru": "Настройки"],
     "loginStart":   ["en": "Launch Fanctl at login", "zh": "登录时自动启动 Fanctl", "ja": "ログイン時に Fanctl を起動", "ko": "로그인 시 Fanctl 시작",
@@ -378,14 +389,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 606),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 636),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
         window.title = "Fanctl"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 606))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 636))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -431,8 +442,23 @@ final class PanelController: NSObject, NSWindowDelegate {
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
+        let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
+        langLabel.font = .systemFont(ofSize: 13)
+        langLabel.frame = NSRect(x: 24, y: 528, width: 110, height: 20)
+        root.addSubview(langLabel)
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 524, width: 226, height: 26))
+        let current = UserDefaults.standard.string(forKey: langOverrideKey)
+        for (code, name) in langChoices {
+            pop.addItem(withTitle: code == nil ? T("langSystem") : name)
+            pop.lastItem?.representedObject = code as Any?
+            if code == current { pop.select(pop.lastItem) }
+        }
+        pop.target = self
+        pop.action = #selector(pickLangPopup(_:))
+        root.addSubview(pop)
+
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 526, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 556, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -441,12 +467,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 574, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 604, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 574, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 604, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
@@ -487,6 +513,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     @objc func toggleIcon() {
         UserDefaults.standard.set(iconBox.state == .on, forKey: "showMenuIcon")
         app?.applyMenuIconVisibility()
+    }
+
+    @objc func pickLangPopup(_ sender: NSPopUpButton) {
+        app?.applyLanguage(sender.selectedItem?.representedObject as? String)
     }
 
     @objc func openMail() {
@@ -619,6 +649,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
+        let langItem = NSMenuItem(title: "🌐 " + T("language"), action: nil, keyEquivalent: "")
+        let langMenu = NSMenu()
+        let current = UserDefaults.standard.string(forKey: langOverrideKey)
+        for (code, name) in langChoices {
+            let m = NSMenuItem(title: code == nil ? T("langSystem") : name,
+                               action: #selector(pickLang(_:)), keyEquivalent: "")
+            m.target = self
+            m.representedObject = code as Any?
+            m.state = (code == current) ? .on : .off
+            langMenu.addItem(m)
+            if code == nil { langMenu.addItem(.separator()) }
+        }
+        langItem.submenu = langMenu
+        menu.addItem(langItem)
         menu.addItem(makeItem(T("installSvc"), #selector(installService)))
         menu.addItem(makeItem(T("feedback"), #selector(openFeedback)))
         menu.addItem(makeItem(T("quit"), #selector(quit)))
@@ -635,6 +679,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func openPanel() { panel.show() }
+
+    @objc func pickLang(_ sender: NSMenuItem) {
+        applyLanguage(sender.representedObject as? String)
+    }
+
+    func applyLanguage(_ code: String?) {
+        if let code {
+            UserDefaults.standard.set(code, forKey: langOverrideKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: langOverrideKey)
+        }
+        UserDefaults.standard.synchronize()
+        // 界面语言在启动时固化，切换后自动重启应用生效
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
 
     @objc func openFeedback() {
         NSWorkspace.shared.open(URL(string: "mailto:\(feedbackEmail)?subject=Fanctl%20Feedback")!)
