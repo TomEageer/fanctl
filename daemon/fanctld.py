@@ -176,7 +176,8 @@ def append_history(mode):
             f.write(json.dumps({"ts": round(time.time(), 1),
                                 "temp": round(state["temp"], 1),
                                 "rpm": state.get("act", 0),
-                                "mode": mode}) + "\n")
+                                "mode": mode,
+                                "pf": state.get("profile", "balanced")}) + "\n")
         os.chmod(HISTORY, 0o644)
         state["hist_n"] = state.get("hist_n", 0) + 1
         if state["hist_n"] >= 400:

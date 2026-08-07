@@ -160,7 +160,7 @@ let L10N: [String: [String: String]] = [
                      "ru": "Отменено или произошла ошибка. Повторите через «Установить / обновить службу…» в меню."],
 ]
 
-struct Sample { let ts, temp: Double; let rpm: Double; let mode: String }
+struct Sample { let ts, temp: Double; let rpm: Double; let mode: String; let pf: String }
 
 func modeColor(_ mode: String) -> NSColor {
     switch mode {
@@ -171,9 +171,17 @@ func modeColor(_ mode: String) -> NSColor {
     }
 }
 
-func modeName(_ mode: String, rpm: Double) -> String {
+func profileName(_ pf: String) -> String {
+    switch pf {
+    case "quiet": return T("pQuiet")
+    case "cool":  return T("pCool")
+    default:      return T("pBalanced")
+    }
+}
+
+func modeName(_ mode: String, rpm: Double, profile: String = "balanced") -> String {
     switch mode {
-    case "manual":  return T("smart")
+    case "manual":  return T("smart") + " · " + profileName(profile)
     case "auto":    return T("smartStandby")
     case "custom":  return "\(T("manual")) · \(Int(rpm)) RPM"
     case "paused":  return T("systemSched")
@@ -191,7 +199,7 @@ final class ChartView: NSView {
     let windowOptions: [(String, Double)] = [(T("win10"), 600), (T("win30"), 1800), (T("win1h"), 3600), (T("win2h"), 7200)]
     var segmented: NSSegmentedControl!
 
-    private let padL: CGFloat = 42, padR: CGFloat = 36, padT: CGFloat = 26, padB: CGFloat = 36
+    private let padL: CGFloat = 42, padR: CGFloat = 36, padT: CGFloat = 26, padB: CGFloat = 50
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -224,7 +232,8 @@ final class ChartView: NSView {
                   let t  = (o["temp"] as? NSNumber)?.doubleValue, t > 1 else { return nil }
             return Sample(ts: ts, temp: t,
                           rpm: (o["rpm"] as? NSNumber)?.doubleValue ?? 0,
-                          mode: o["mode"] as? String ?? "auto")
+                          mode: o["mode"] as? String ?? "auto",
+                          pf: o["pf"] as? String ?? "balanced")
         }
         samples = smoothed(samples, window: 9)
         needsDisplay = true
@@ -238,7 +247,7 @@ final class ChartView: NSView {
             let n = Double(b - a + 1)
             let t = raw[a...b].reduce(0.0) { $0 + $1.temp } / n
             let r = raw[a...b].reduce(0.0) { $0 + $1.rpm } / n
-            return Sample(ts: s.ts, temp: t, rpm: r, mode: s.mode)
+            return Sample(ts: s.ts, temp: t, rpm: r, mode: s.mode, pf: s.pf)
         }
     }
 
@@ -267,12 +276,23 @@ final class ChartView: NSView {
         func pyT(_ v: Double) -> CGFloat { plot.minY + CGFloat((v - lo) / (hi - lo)) * plot.height }
         func pyR(_ v: Double) -> CGFloat { plot.minY + CGFloat(v / rpmAxisMax) * plot.height }
 
+        func bandColor(_ s: Sample) -> NSColor {
+            if s.mode == "manual" {
+                switch s.pf {                       // 智能调速按性格分深浅
+                case "quiet": return NSColor.systemBlue.withAlphaComponent(0.07)
+                case "cool":  return NSColor.systemBlue.withAlphaComponent(0.28)
+                default:      return NSColor.systemBlue.withAlphaComponent(0.15)
+                }
+            }
+            return modeColor(s.mode).withAlphaComponent(0.15)
+        }
         var i = 0
         while i < samples.count {
             var j = i
-            while j + 1 < samples.count && samples[j + 1].mode == samples[i].mode { j += 1 }
+            while j + 1 < samples.count && samples[j + 1].mode == samples[i].mode
+                  && samples[j + 1].pf == samples[i].pf { j += 1 }
             let x1 = px(samples[i].ts), x2 = max(px(samples[j].ts), x1 + 1)
-            modeColor(samples[i].mode).withAlphaComponent(0.15).setFill()
+            bandColor(samples[i]).setFill()
             NSRect(x: x1, y: plot.minY, width: x2 - x1, height: plot.height).fill()
             i = j + 1
         }
@@ -290,8 +310,8 @@ final class ChartView: NSView {
                      at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
                      color: NSColor.systemTeal.withAlphaComponent(0.9))
         }
-        drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 13), size: 9, color: .tertiaryLabelColor)
-        drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 13), size: 9, color: .tertiaryLabelColor)
+        drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 12), size: 9, color: .tertiaryLabelColor)
+        drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 12), size: 9, color: .tertiaryLabelColor)
 
         NSColor.systemTeal.setStroke()
         splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
@@ -333,17 +353,28 @@ final class ChartView: NSView {
     }
 
     private func drawLegend() {
+        // 第一行：智能调速三档深浅
         var x: CGFloat = padL
-        for (mode, name) in [("manual", T("smart")), ("custom", T("manual")), ("auto", T("systemSched"))] {
+        drawText(T("smart") + ":", at: NSPoint(x: x, y: 19), size: 9, color: .secondaryLabelColor)
+        x += (T("smart") + ":").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 8
+        for (alpha, key) in [(0.25, "pQuiet"), (0.55, "pBalanced"), (1.0, "pCool")] {
+            NSColor.systemBlue.withAlphaComponent(alpha).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x, y: 21, width: 7, height: 7)).fill()
+            drawText(T(key), at: NSPoint(x: x + 10, y: 18), size: 9, color: .secondaryLabelColor)
+            x += 10 + T(key).size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
+        }
+        // 第二行：手动定速 / 系统调度 / 转速线
+        x = padL
+        for (mode, name) in [("custom", T("manual")), ("auto", T("systemSched"))] {
             modeColor(mode).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x, y: 8, width: 7, height: 7)).fill()
-            drawText(name, at: NSPoint(x: x + 10, y: 5), size: 9, color: .secondaryLabelColor)
-            x += 10 + name.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 12
+            NSBezierPath(ovalIn: NSRect(x: x, y: 7, width: 7, height: 7)).fill()
+            drawText(name, at: NSPoint(x: x + 10, y: 4), size: 9, color: .secondaryLabelColor)
+            x += 10 + name.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
         }
         NSColor.systemTeal.setStroke()
         let seg = NSBezierPath(); seg.lineWidth = 2
-        seg.move(to: NSPoint(x: x, y: 11)); seg.line(to: NSPoint(x: x + 12, y: 11)); seg.stroke()
-        drawText(T("rpm"), at: NSPoint(x: x + 15, y: 5), size: 9, color: .secondaryLabelColor)
+        seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
+        drawText(T("rpm"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -641,8 +672,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         let power = (j["power"] as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
         tempBig.stringValue = String(format: "%.1f °C", temp)
-        subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm))
         let profNow = j["profile"] as? String ?? "balanced"
+        subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm, profile: profNow))
         for item in smartPop.itemArray.dropFirst() {
             item.state = ((item.representedObject as? String) == profNow) ? .on : .off
         }
@@ -1100,7 +1131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setBarText(temp: temp, power: power, stale: stale)
         tempRow.title  = String(format: "%@　%.1f °C%@", T("cpuTemp"), temp, stale ? T("stale") : "")
         powerRow.title = String(format: "%@　%.1f W", T("sysPower"), power)
-        modeRow.title  = "\(T("runMode"))　" + modeName(mode, rpm: rpm)
+        let profNow0 = j["profile"] as? String ?? "balanced"
+        modeRow.title  = "\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0)
 
         smartItem.state = (mode == "manual" || mode == "auto") ? .on : .off
         pauseItem.state = (mode == "paused") ? .on : .off
