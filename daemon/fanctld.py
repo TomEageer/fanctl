@@ -108,14 +108,20 @@ def write_status(mode):
 
 
 def read_command():
-    """消费指令文件，只接受白名单动词（文件对普通用户可写，动词之外一律忽略）。"""
+    """消费指令文件，只接受白名单动词（文件对普通用户可写，动词之外一律忽略）。
+    合法: pause | resume | max | set <rpm>"""
     try:
         with open(CMD) as f:
             verb = f.read().strip()
         os.unlink(CMD)
-        return verb if verb in ("pause", "resume", "max") else None
     except OSError:
         return None
+    if verb in ("pause", "resume", "max"):
+        return verb
+    m = re.match(r"^set (\d{3,5})$", verb)
+    if m:
+        return "set " + m.group(1)
+    return None
 
 
 def set_auto(reason=""):
@@ -167,14 +173,16 @@ def handle_command():
     if verb == "pause":
         state["override"] = "pause"
         set_auto("(paused by user)")
-    elif verb == "max":
-        state["override"] = "max"
-        state["rpm"] = FAN_MAX
-        write_rpm(FAN_MAX)
-        log("user override: max")
     elif verb == "resume":
         state["override"] = None
         log("user override cleared, smart control resumed")
+    else:                                   # max 或 set <rpm> → 自定义定速模式
+        rpm = FAN_MAX if verb == "max" else float(verb.split()[1])
+        rpm = max(FAN_MIN, min(FAN_MAX, rpm))
+        state["override"] = "custom"
+        state["rpm"] = rpm
+        write_rpm(rpm)
+        log("user override: custom %d rpm" % rpm)
 
 
 def control_tick(temp):
@@ -186,8 +194,10 @@ def control_tick(temp):
     if state["override"] == "pause":
         write_status("paused")
         return
-    if state["override"] == "max":
-        write_status("max")
+    if state["override"] == "custom":
+        if abs(state["written"] - state["rpm"]) >= 1:   # 断言定速仍然生效
+            write_rpm(state["rpm"])
+        write_status("custom")
         return
 
     if not state["manual"]:

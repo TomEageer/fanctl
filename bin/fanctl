@@ -13,7 +13,7 @@ case "$1" in
 import json,time
 d=json.load(open('$STATUS'))
 age=time.time()-d.get('ts',0)
-mode={'manual':'智能温控中','auto':'待命(系统自动)','paused':'已暂停','max':'手动拉满','battery':'电池供电(不介入)'}.get(d['mode'],d['mode'])
+mode={'manual':'智能温控中','auto':'待命(系统自动)','paused':'已暂停','max':'手动拉满','custom':'自定义转速','battery':'电池供电(不介入)'}.get(d['mode'],d['mode'])
 print('温度: %.1f°C   风扇: %s   功耗: %.1fW   模式: %s%s' % (
     d['temp'], ('%d rpm'%d['rpm']) if d['rpm'] else '系统自动', d['power'], mode,
     '   [数据已过期]' if age>90 else ''))"
@@ -25,7 +25,8 @@ print('温度: %.1f°C   风扇: %s   功耗: %.1fW   模式: %s%s' % (
   pause)  echo pause  > /tmp/fanctl-cmd ;;
   resume) echo resume > /tmp/fanctl-cmd ;;
   max)    echo max    > /tmp/fanctl-cmd ;;
+  set)    echo "set $2" > /tmp/fanctl-cmd ;;
   auto)   sudo /usr/local/bin/smcfan auto ;;
   log)    tail -20 /var/log/fanctl.log ;;
-  *) echo "用法: fanctl status|start|stop|pause|resume|max|auto|log"; exit 2 ;;
+  *) echo "用法: fanctl status|start|stop|pause|resume|max|set <rpm>|auto|log"; exit 2 ;;
 esac
