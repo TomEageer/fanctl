@@ -569,6 +569,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 168))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 单实例守卫：已有同 bundle id 实例在跑则直接退出（防手动启动/LaunchAgent 双开）
+        let peers = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == "io.fanctl.menubar" && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        if !peers.isEmpty {
+            NSApp.terminate(nil)
+            return
+        }
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "…°"
         let menu = NSMenu()
