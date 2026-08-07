@@ -26,10 +26,10 @@ func modeColor(_ mode: String) -> NSColor {
 func modeName(_ mode: String, rpm: Double) -> String {
     switch mode {
     case "manual":  return "智能调速"
-    case "auto":    return "待命 · 系统调度"
+    case "auto":    return "智能调速 · 待命"
     case "custom":  return "手动定速 · \(Int(rpm)) RPM"
-    case "paused":  return "已停用 · 系统调度"
-    case "battery": return "电池供电 · 已停用"
+    case "paused":  return "系统调度"
+    case "battery": return "电池供电 · 系统调度"
     default:        return mode
     }
 }
@@ -217,7 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let sliderItem = NSMenuItem()
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 52))
-        sliderLabel = NSTextField(labelWithString: "当前转速")
+        sliderLabel = NSTextField(labelWithString: "转速")
         sliderLabel.font = .menuFont(ofSize: 13)
         sliderLabel.frame = NSRect(x: 14, y: 30, width: 292, height: 18)
         slider = NSSlider(value: fanMin, minValue: fanMin, maxValue: fanMax,
@@ -232,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         smartItem = makeItem("智能调速", #selector(cmdResume))
         fullItem  = makeItem("全速运行", #selector(cmdMax))
-        pauseItem = makeItem("停用（风扇交由系统调度）", #selector(cmdPause))
+        pauseItem = makeItem("系统调度", #selector(cmdPause))
         menu.addItem(smartItem)
         menu.addItem(fullItem)
         menu.addItem(pauseItem)
@@ -299,8 +299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let shown = act > 0 ? act : fanMin
             slider.doubleValue = min(max(shown, fanMin), fanMax)
             sliderLabel.stringValue = act > 0
-                ? "当前转速　\(Int(act)) RPM"
-                : "当前转速　--"
+                ? "转速　\(Int(act)) RPM"
+                : "转速　--"
             slider.isEnabled = (mode != "battery")
         }
     }
@@ -315,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func sliderMoved(_ s: NSSlider) {
         let rpm = Int(s.doubleValue)
         dragging = true
-        sliderLabel.stringValue = "目标转速　\(rpm) RPM（松开生效 · 手动定速）"
+        sliderLabel.stringValue = "手动定速　\(rpm) RPM（松开生效）"
         if NSApp.currentEvent?.type == .leftMouseUp {
             dragging = false
             writeCmd("set \(rpm)")

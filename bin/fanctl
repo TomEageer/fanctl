@@ -13,7 +13,7 @@ case "$1" in
 import json,time
 d=json.load(open('$STATUS'))
 age=time.time()-d.get('ts',0)
-mode={'manual':'智能调速','auto':'待命·系统调度','paused':'已停用·系统调度','max':'全速运行','custom':'手动定速','battery':'电池供电·已停用'}.get(d['mode'],d['mode'])
+mode={'manual':'智能调速','auto':'智能调速·待命','paused':'系统调度','max':'全速运行','custom':'手动定速','battery':'电池供电·系统调度'}.get(d['mode'],d['mode'])
 print('温度: %.1f°C   风扇: %s   功耗: %.1fW   模式: %s%s' % (
     d['temp'], ('%d RPM'%d.get('act',d['rpm'])), d['power'], mode,
     '   [数据已过期]' if age>90 else ''))"
