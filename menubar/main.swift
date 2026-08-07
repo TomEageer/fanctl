@@ -238,7 +238,7 @@ final class ChartView: NSView {
         let plot = NSRect(x: padL, y: padB, width: bounds.width - padL - padR,
                           height: bounds.height - padT - padB)
         let title = windowOptions.first { $0.1 == windowSec }?.0 ?? ""
-        drawText("\(T("chartTitle")) · \(title)",
+        drawText(T("chartTitle"),
                  at: NSPoint(x: padL, y: bounds.height - 18), size: 11, color: .labelColor, bold: true)
         drawLegend()
 
@@ -422,7 +422,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     let chart = ChartView(frame: NSRect(x: 24, y: 96, width: 340, height: 186))
     let speedLabel = NSTextField(labelWithString: "--")
     let speed = SpeedControlView(frame: NSRect(x: 24, y: 352, width: 340, height: 24))
-    var profileSeg: NSSegmentedControl!
+    var smartPop: NSPopUpButton!
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
     let powerBox = NSButton(checkboxWithTitle: T("showPower"), target: nil, action: nil)
@@ -444,7 +444,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 722),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 676),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
@@ -452,7 +452,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if #available(macOS 11.0, *) { window.subtitle = "v\(appVersion)" }
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 722))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 676))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -478,44 +478,42 @@ final class PanelController: NSObject, NSWindowDelegate {
         }
         root.addSubview(speed)
 
-        let titles = [(T("smart"), "resume"), (T("maxSpeed"), "max"), (T("restoreSys"), "pause")]
         let bw: CGFloat = (340 - 16) / 3
-        for (i, (title, verb)) in titles.enumerated() {
+        smartPop = NSPopUpButton(frame: NSRect(x: 24, y: 392, width: bw + 14, height: 32), pullsDown: true)
+        smartPop.addItem(withTitle: T("smart"))
+        for (code, key) in [("quiet", "pQuiet"), ("balanced", "pBalanced"), ("cool", "pCool")] {
+            smartPop.addItem(withTitle: T(key))
+            smartPop.lastItem?.representedObject = code
+            smartPop.lastItem?.target = self
+            smartPop.lastItem?.action = #selector(panelPickProfile(_:))
+        }
+        root.addSubview(smartPop)
+        for (i, (title, verb)) in [(T("maxSpeed"), "max"), (T("restoreSys"), "pause")].enumerated() {
             let b = NSButton(title: title, target: self, action: #selector(modeButton(_:)))
             b.bezelStyle = .rounded
             b.controlSize = .large
             b.font = .systemFont(ofSize: 12)
             b.identifier = NSUserInterfaceItemIdentifier(verb)
-            b.frame = NSRect(x: 24 + CGFloat(i) * (bw + 8), y: 392, width: bw, height: 32)
+            b.frame = NSRect(x: 24 + 14 + CGFloat(i + 1) * (bw + 8), y: 392, width: bw - 7, height: 32)
             root.addSubview(b)
         }
 
-        let profLabel = NSTextField(labelWithString: T("profile"))
-        profLabel.font = .systemFont(ofSize: 13)
-        profLabel.frame = NSRect(x: 24, y: 438, width: 110, height: 20)
-        root.addSubview(profLabel)
-        profileSeg = NSSegmentedControl(labels: [T("pQuiet"), T("pBalanced"), T("pCool")],
-                                        trackingMode: .selectOne, target: self,
-                                        action: #selector(pickProfileSeg(_:)))
-        profileSeg.frame = NSRect(x: 138, y: 434, width: 226, height: 26)
-        root.addSubview(profileSeg)
-
-        root.addSubview(separator(y: 480))
-        root.addSubview(sectionLabel(T("settings"), y: 492))
-        loginBox.frame = NSRect(x: 24, y: 514, width: 340, height: 20)
+        root.addSubview(separator(y: 434))
+        root.addSubview(sectionLabel(T("settings"), y: 446))
+        loginBox.frame = NSRect(x: 24, y: 468, width: 340, height: 20)
         loginBox.target = self; loginBox.action = #selector(toggleLogin)
-        iconBox.frame = NSRect(x: 24, y: 538, width: 340, height: 20)
+        iconBox.frame = NSRect(x: 24, y: 492, width: 340, height: 20)
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
-        powerBox.frame = NSRect(x: 24, y: 562, width: 340, height: 20)
+        powerBox.frame = NSRect(x: 24, y: 516, width: 340, height: 20)
         powerBox.target = self; powerBox.action = #selector(togglePower)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
         root.addSubview(powerBox)
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
-        langLabel.frame = NSRect(x: 24, y: 590, width: 110, height: 20)
+        langLabel.frame = NSRect(x: 24, y: 544, width: 110, height: 20)
         root.addSubview(langLabel)
-        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 586, width: 226, height: 26))
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 540, width: 226, height: 26))
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
             pop.addItem(withTitle: code == nil ? T("langSystem") : name)
@@ -527,7 +525,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(pop)
 
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 618, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 572, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -536,25 +534,25 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 666, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 620, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 666, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 620, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
         let ver = NSTextField(labelWithString: "Fanctl v\(appVersion)")
         ver.font = .systemFont(ofSize: 11)
         ver.textColor = .tertiaryLabelColor
-        ver.frame = NSRect(x: 24, y: 692, width: 150, height: 16)
+        ver.frame = NSRect(x: 24, y: 646, width: 150, height: 16)
         root.addSubview(ver)
         let upd = NSButton(title: T("checkUpdate"), target: self, action: #selector(checkUpd))
         upd.isBordered = false
         upd.contentTintColor = .linkColor
         upd.font = .systemFont(ofSize: 11)
-        upd.frame = NSRect(x: 228, y: 690, width: 140, height: 18)
+        upd.frame = NSRect(x: 228, y: 644, width: 140, height: 18)
         root.addSubview(upd)
 
         window.contentView = root
@@ -603,9 +601,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         app?.refresh()
     }
 
-    @objc func pickProfileSeg(_ sender: NSSegmentedControl) {
-        let codes = ["quiet", "balanced", "cool"]
-        app?.writeCmd("profile \(codes[sender.selectedSegment])")
+    @objc func panelPickProfile(_ sender: NSMenuItem) {
+        if let code = sender.representedObject as? String { app?.writeCmd("profile \(code)") }
     }
 
     @objc func pickLangPopup(_ sender: NSPopUpButton) {
@@ -638,7 +635,9 @@ final class PanelController: NSObject, NSWindowDelegate {
         tempBig.stringValue = String(format: "%.1f °C", temp)
         subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm))
         let profNow = j["profile"] as? String ?? "balanced"
-        profileSeg.selectedSegment = ["quiet", "balanced", "cool"].firstIndex(of: profNow) ?? 1
+        for item in smartPop.itemArray.dropFirst() {
+            item.state = ((item.representedObject as? String) == profNow) ? .on : .off
+        }
         if !speed.dragging {
             speed.actual = act > 0 ? act : fanMin
             speed.setpoint = (mode == "custom") ? rpm : nil
@@ -804,14 +803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(speedItem)
         menu.addItem(.separator())
 
-        smartItem = makeItem(T("smart"), #selector(cmdResume))
-        fullItem  = makeItem(T("maxSpeed"), #selector(cmdMax))
-        pauseItem = makeItem(T("restoreSys"), #selector(cmdPause))
-        menu.addItem(smartItem)
-        menu.addItem(fullItem)
-        menu.addItem(pauseItem)
-        let profItem = NSMenuItem(title: T("profile"), action: nil, keyEquivalent: "")
-        profItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        smartItem = NSMenuItem(title: T("smart"), action: nil, keyEquivalent: "")
         let profMenu = NSMenu()
         for (code, key) in [("quiet", "pQuiet"), ("balanced", "pBalanced"), ("cool", "pCool")] {
             let m = NSMenuItem(title: T(key), action: #selector(pickProfile(_:)), keyEquivalent: "")
@@ -820,8 +812,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             profMenu.addItem(m)
             profileItems[code] = m
         }
-        profItem.submenu = profMenu
-        menu.addItem(profItem)
+        smartItem.submenu = profMenu
+        fullItem  = makeItem(T("maxSpeed"), #selector(cmdMax))
+        pauseItem = makeItem(T("restoreSys"), #selector(cmdPause))
+        menu.addItem(smartItem)
+        menu.addItem(fullItem)
+        menu.addItem(pauseItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
         menu.addItem(.separator())
@@ -1074,15 +1070,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         if AppDelegate.showPowerInBar() && power > 0 {
-            let para = NSMutableParagraphStyle()
-            para.maximumLineHeight = 10
-            para.minimumLineHeight = 10
-            para.alignment = .center
-            let attr = NSAttributedString(
-                string: "\(Int(temp.rounded()))°\n\(Int(power.rounded()))W",
-                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium),
-                             .paragraphStyle: para,
-                             .baselineOffset: -4])
+            // 主次字号：温度 11pt 半粗为主，功耗 8pt 为辅
+            let pTop = NSMutableParagraphStyle()
+            pTop.maximumLineHeight = 12; pTop.minimumLineHeight = 12; pTop.alignment = .center
+            let pBot = NSMutableParagraphStyle()
+            pBot.maximumLineHeight = 9; pBot.minimumLineHeight = 9; pBot.alignment = .center
+            let attr = NSMutableAttributedString()
+            attr.append(NSAttributedString(
+                string: "\(Int(temp.rounded()))°\n",
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                             .paragraphStyle: pTop, .baselineOffset: -3]))
+            attr.append(NSAttributedString(
+                string: "\(Int(power.rounded()))W",
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium),
+                             .paragraphStyle: pBot, .baselineOffset: -3]))
             btn.title = ""
             btn.attributedTitle = attr
         } else {

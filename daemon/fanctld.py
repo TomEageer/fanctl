@@ -263,9 +263,10 @@ def handle_command():
         log("user override cleared, smart control resumed")
     elif verb.startswith("profile "):
         state["profile"] = verb.split()[1]
+        state["override"] = None          # 选性格即进入智能调速，解除暂停/手动
         state["model_dirty"] = True
         save_model(force=True)
-        log("profile -> %s" % state["profile"])
+        log("profile -> %s (smart control active)" % state["profile"])
     else:                                   # max 或 set <rpm> → 自定义定速模式
         rpm = FAN_MAX if verb == "max" else float(verb.split()[1])
         rpm = max(FAN_MIN, min(FAN_MAX, rpm))
