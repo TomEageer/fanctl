@@ -80,7 +80,21 @@ final class ChartView: NSView {
                           rpm: (o["rpm"] as? NSNumber)?.doubleValue ?? 0,
                           mode: o["mode"] as? String ?? "auto")
         }
+        samples = smoothed(samples, window: 5)
         needsDisplay = true
+    }
+
+    /// 显示层平滑：居中移动平均（原始历史数据不动）
+    private func smoothed(_ raw: [Sample], window: Int) -> [Sample] {
+        guard raw.count > window else { return raw }
+        let half = window / 2
+        return raw.enumerated().map { i, s in
+            let a = max(0, i - half), b = min(raw.count - 1, i + half)
+            let n = Double(b - a + 1)
+            let t = raw[a...b].reduce(0.0) { $0 + $1.temp } / n
+            let r = raw[a...b].reduce(0.0) { $0 + $1.rpm } / n
+            return Sample(ts: s.ts, temp: t, rpm: r, mode: s.mode)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

@@ -93,7 +93,7 @@ RATE_LIMIT   = 200.0  # 每拍最大转速变化（越小越温柔）
 
 - **不要与 Macs Fan Control / TG Pro 等其他风扇软件同时运行**——两个控制器互相覆写指令，可能把 SMC 接口顶进临时保护状态（读数变 0、写入报 -126；停止争抢后自行恢复，重启必恢复）
 - 守护进程运行时，旁路直接 `smcfan probe` 可能读到 0（SMC 通道并发限制），以 `fanctl status`（读状态文件）为准
-- 菜单栏应用为 ad-hoc 签名，首次由他处下载运行需右键打开
+- 菜单栏应用为 ad-hoc 签名（未做 Apple 公证）。从浏览器下载后系统会附加隔离标记，可能弹出"已损坏/不能与此版本 macOS 配合使用"的误导性提示，放行方式任选其一：右键 → 打开；或终端执行 `xattr -dr com.apple.quarantine /Applications/Fanctl.app`
 
 ## License
 
