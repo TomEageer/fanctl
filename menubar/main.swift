@@ -80,6 +80,14 @@ let L10N: [String: [String: String]] = [
                      "es": "Servicio no activo", "fr": "Service inactif", "de": "Dienst läuft nicht", "ru": "Служба не запущена"],
     "stale":        ["en": " (stale)", "zh": "（数据过期）", "ja": "（データ期限切れ）", "ko": " (오래된 데이터)",
                      "es": " (obsoleto)", "fr": " (périmé)", "de": " (veraltet)", "ru": " (устарело)"],
+    "profile":      ["en": "Fan Profile", "zh": "调速性格", "ja": "制御プロファイル", "ko": "제어 프로파일",
+                     "es": "Perfil", "fr": "Profil", "de": "Profil", "ru": "Профиль"],
+    "pQuiet":       ["en": "Quiet", "zh": "安静", "ja": "静音", "ko": "조용함",
+                     "es": "Silencioso", "fr": "Silencieux", "de": "Leise", "ru": "Тихий"],
+    "pBalanced":    ["en": "Balanced", "zh": "均衡", "ja": "バランス", "ko": "균형",
+                     "es": "Equilibrado", "fr": "Équilibré", "de": "Ausgewogen", "ru": "Баланс"],
+    "pCool":        ["en": "Cool", "zh": "凉爽", "ja": "冷却重視", "ko": "시원함",
+                     "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "language":     ["en": "Language", "zh": "语言", "ja": "言語", "ko": "언어",
                      "es": "Idioma", "fr": "Langue", "de": "Sprache", "ru": "Язык"],
     "langSystem":   ["en": "System Default", "zh": "跟随系统", "ja": "システムに従う", "ko": "시스템 기본값",
@@ -369,6 +377,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     let chart = ChartView(frame: NSRect(x: 24, y: 96, width: 340, height: 186))
     let speedLabel = NSTextField(labelWithString: "--")
     let speed = SpeedControlView(frame: NSRect(x: 24, y: 352, width: 340, height: 24))
+    var profileSeg: NSSegmentedControl!
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
     var timer: Timer?
@@ -389,14 +398,14 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 636),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 672),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
         window.title = "Fanctl"
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 636))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 672))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -434,19 +443,29 @@ final class PanelController: NSObject, NSWindowDelegate {
             root.addSubview(b)
         }
 
-        root.addSubview(separator(y: 444))
-        root.addSubview(sectionLabel(T("settings"), y: 456))
-        loginBox.frame = NSRect(x: 24, y: 478, width: 340, height: 20)
+        let profLabel = NSTextField(labelWithString: T("profile"))
+        profLabel.font = .systemFont(ofSize: 13)
+        profLabel.frame = NSRect(x: 24, y: 438, width: 110, height: 20)
+        root.addSubview(profLabel)
+        profileSeg = NSSegmentedControl(labels: [T("pQuiet"), T("pBalanced"), T("pCool")],
+                                        trackingMode: .selectOne, target: self,
+                                        action: #selector(pickProfileSeg(_:)))
+        profileSeg.frame = NSRect(x: 138, y: 434, width: 226, height: 26)
+        root.addSubview(profileSeg)
+
+        root.addSubview(separator(y: 480))
+        root.addSubview(sectionLabel(T("settings"), y: 492))
+        loginBox.frame = NSRect(x: 24, y: 514, width: 340, height: 20)
         loginBox.target = self; loginBox.action = #selector(toggleLogin)
-        iconBox.frame = NSRect(x: 24, y: 502, width: 340, height: 20)
+        iconBox.frame = NSRect(x: 24, y: 538, width: 340, height: 20)
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
-        langLabel.frame = NSRect(x: 24, y: 528, width: 110, height: 20)
+        langLabel.frame = NSRect(x: 24, y: 564, width: 110, height: 20)
         root.addSubview(langLabel)
-        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 524, width: 226, height: 26))
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 560, width: 226, height: 26))
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
             pop.addItem(withTitle: code == nil ? T("langSystem") : name)
@@ -458,7 +477,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(pop)
 
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 556, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 592, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -467,12 +486,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 604, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 640, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 604, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 640, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
@@ -515,6 +534,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         app?.applyMenuIconVisibility()
     }
 
+    @objc func pickProfileSeg(_ sender: NSSegmentedControl) {
+        let codes = ["quiet", "balanced", "cool"]
+        app?.writeCmd("profile \(codes[sender.selectedSegment])")
+    }
+
     @objc func pickLangPopup(_ sender: NSPopUpButton) {
         app?.applyLanguage(sender.selectedItem?.representedObject as? String)
     }
@@ -542,6 +566,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         let mode  = j["mode"] as? String ?? "?"
         tempBig.stringValue = String(format: "%.1f °C", temp)
         subLine.stringValue = String(format: "%.1f W · %@", power, modeName(mode, rpm: rpm))
+        let profNow = j["profile"] as? String ?? "balanced"
+        profileSeg.selectedSegment = ["quiet", "balanced", "cool"].firstIndex(of: profNow) ?? 1
         if !speed.dragging {
             speed.actual = act > 0 ? act : fanMin
             speed.setpoint = (mode == "custom") ? rpm : nil
@@ -594,6 +620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var smartItem: NSMenuItem!
     var pauseItem: NSMenuItem!
     var fullItem: NSMenuItem!
+    var profileItems: [String: NSMenuItem] = [:]
     var speedLabel: NSTextField!
     let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 2, width: 292, height: 24))
     let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 176))
@@ -647,6 +674,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(smartItem)
         menu.addItem(fullItem)
         menu.addItem(pauseItem)
+        let profItem = NSMenuItem(title: T("profile"), action: nil, keyEquivalent: "")
+        profItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
+        let profMenu = NSMenu()
+        for (code, key) in [("quiet", "pQuiet"), ("balanced", "pBalanced"), ("cool", "pCool")] {
+            let m = NSMenuItem(title: T(key), action: #selector(pickProfile(_:)), keyEquivalent: "")
+            m.target = self
+            m.representedObject = code
+            profMenu.addItem(m)
+            profileItems[code] = m
+        }
+        profItem.submenu = profMenu
+        menu.addItem(profItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
         menu.addItem(.separator())
@@ -686,6 +725,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func openPanel() { panel.show() }
+
+    @objc func pickProfile(_ sender: NSMenuItem) {
+        if let code = sender.representedObject as? String { writeCmd("profile \(code)") }
+    }
 
     @objc func pickLang(_ sender: NSMenuItem) {
         applyLanguage(sender.representedObject as? String)
@@ -792,6 +835,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         smartItem.state = (mode == "manual" || mode == "auto") ? .on : .off
         pauseItem.state = (mode == "paused") ? .on : .off
         fullItem.state  = (mode == "custom" && rpm >= fanMax - 50) ? .on : .off
+        let profNow = j["profile"] as? String ?? "balanced"
+        for (code, m) in profileItems { m.state = (code == profNow) ? .on : .off }
 
         if !speedControl.dragging {
             speedControl.actual = act > 0 ? act : fanMin

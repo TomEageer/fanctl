@@ -36,23 +36,24 @@ MODEL   = "/usr/local/var/fanctl/model.json"   # 自学习热模型（持久化�
 HIST_KEEP = 2400          # 修剪后保留的样本数（约 2 小时 @3s）
 HIST_TRIM_AT = 4800       # 超过此行数触发修剪
 
-TARGET_TEMP  = 55.0   # 舒适档：允许温热平衡，安静优先（原 50 偏激进）
-ENGAGE_TEMP  = 53.0
-RELEASE_TEMP = 46.0
 FAN_MIN      = 2317.0
 FAN_MAX      = 7826.0
-KP           = 70.0   # 比例调柔：偏差的即时反应减半
-KI           = 6.0    # 积分不动：仍会缓慢把温度带回目标（"缓缓落温"靠它）
-KD_TREND     = 300.0  # 趋势阻尼：每拍温升 1°C 额外 +300 rpm，只阻上升不压绝对值
-RATE_UP_1    = 150.0   # 升速斜率：偏差 <5°C（舒适档整体放缓）
-RATE_UP_2    = 300.0   # 升速斜率：偏差 5~15°C
-RATE_UP_3    = 500.0   # 升速斜率：偏差 >15°C
-RATE_DOWN    = 120.0   # 降速斜率：始终温柔
+KI           = 6.0    # 积分：缓慢把温度带回目标，三档共用
+
+# 调速性格三档：quiet 尽可能慢慢压 / balanced 压住上升徐徐落温 / cool 尽快压下再回落保持
+PROFILES = {
+    "quiet":    dict(target=58.0, kp=45.0,  kd=200.0, up=(100.0, 200.0, 350.0), down=100.0, spike=25.0),
+    "balanced": dict(target=55.0, kp=70.0,  kd=300.0, up=(150.0, 300.0, 500.0), down=120.0, spike=45.0),
+    "cool":     dict(target=48.0, kp=130.0, kd=450.0, up=(300.0, 500.0, 800.0), down=150.0, spike=60.0),
+}
+
+
+def prof():
+    return PROFILES[state.get("profile", "balanced")]
 WRITE_BAND   = 75.0
 POWER_HOLD   = 60.0    # 功耗读数失效时沿用上一有效值的时长（秒）
 FF_GAIN_MIN  = 60.0    # 自学习前馈增益下限（RPM/W）
 FF_GAIN_MAX  = 200.0   # 上限
-KW_SPIKE     = 45.0    # 功耗突增预压制：每瓦突增额外 +45 RPM
 LEARN_RATE   = 0.02    # 稳态时积分向前馈增益的迁移速率
 RELEASE_HOLD = 24
 BATT_POLL    = 30
@@ -60,7 +61,7 @@ BATT_POLL    = 30
 state = {"manual": False, "rpm": 0.0, "written": 0.0, "integ": 0.0, "cool": 0,
          "override": None, "temp": 0.0, "power": 0.0,
          "ff_gain": 110.0, "w_slow": 0.0, "temps": [], "model_dirty": False,
-         "model_saved": 0.0}
+         "model_saved": 0.0, "profile": "balanced"}
 
 
 def load_model():
@@ -68,6 +69,8 @@ def load_model():
         with open(MODEL) as f:
             m = json.load(f)
         state["ff_gain"] = max(FF_GAIN_MIN, min(FF_GAIN_MAX, float(m.get("ff_gain", 110.0))))
+        if m.get("profile") in PROFILES:
+            state["profile"] = m["profile"]
         log("model loaded: ff_gain=%.1f rpm/W" % state["ff_gain"])
     except (OSError, ValueError):
         pass
@@ -80,7 +83,7 @@ def save_model(force=False):
     try:
         os.makedirs(os.path.dirname(MODEL), exist_ok=True)
         with open(MODEL, "w") as f:
-            json.dump({"ff_gain": round(state["ff_gain"], 2), "updated": now}, f)
+            json.dump({"ff_gain": round(state["ff_gain"], 2), "profile": state["profile"], "updated": now}, f)
         state["model_dirty"] = False
         state["model_saved"] = now
     except OSError:
@@ -157,6 +160,7 @@ def write_status(mode):
                        "rpm": int(state["rpm"] if state["manual"] else 0),
                        "mode": mode,
                        "act": state.get("act", 0),
+                       "profile": state.get("profile", "balanced"),
                        "power": round(state["power"], 1),
                        "ts": time.time()}, f)
         os.replace(tmp, STATUS)
@@ -196,6 +200,8 @@ def read_command():
     except OSError:
         return None
     if verb in ("pause", "resume", "max"):
+        return verb
+    if verb.startswith("profile ") and verb.split()[1] in PROFILES:
         return verb
     m = re.match(r"^set (\d{3,5})$", verb)
     if m:
@@ -255,6 +261,11 @@ def handle_command():
     elif verb == "resume":
         state["override"] = None
         log("user override cleared, smart control resumed")
+    elif verb.startswith("profile "):
+        state["profile"] = verb.split()[1]
+        state["model_dirty"] = True
+        save_model(force=True)
+        log("profile -> %s" % state["profile"])
     else:                                   # max 或 set <rpm> → 自定义定速模式
         rpm = FAN_MAX if verb == "max" else float(verb.split()[1])
         rpm = max(FAN_MIN, min(FAN_MAX, rpm))
@@ -281,7 +292,7 @@ def control_tick(temp):
         return
 
     if not state["manual"]:
-        if temp >= ENGAGE_TEMP:
+        if temp >= prof()["target"] - 2.0:
             state["rpm"] = read_actual_rpm()
             state["integ"] = 0.0
             state["cool"] = 0
@@ -290,20 +301,20 @@ def control_tick(temp):
         write_status("manual" if state["manual"] else "auto")
         return
 
-    err = temp - TARGET_TEMP
+    err = temp - prof()["target"]
     state["integ"] = max(-1500.0, min(FAN_MAX - FAN_MIN, state["integ"] + KI * err))
 
     # 趋势阻尼：只针对"温度正在上升"发力，升势一被摁住即退出（不参与压绝对温度）
     d = temp - state.get("last_temp", temp)
     state["last_temp"] = temp
     state["trend"] = state.get("trend", 0.0) * 0.5 + d * 0.5
-    damp = KD_TREND * max(0.0, state["trend"])
+    damp = prof()["kd"] * max(0.0, state["trend"])
 
     # 功耗突增预压制：功耗快线越过慢线的瞬间提前提转速，不等温度上来
     w = watts or 0.0
     if state["w_slow"] <= 0:
         state["w_slow"] = w
-    spike = max(0.0, w - state["w_slow"]) * KW_SPIKE
+    spike = max(0.0, w - state["w_slow"]) * prof()["spike"]
     state["w_slow"] = state["w_slow"] * 0.90 + w * 0.10
 
     # 稳态自学习：温度平稳且输出未贴边时，积分携带的常差缓慢迁入前馈增益，
@@ -319,7 +330,7 @@ def control_tick(temp):
             state["model_dirty"] = True
     save_model()
 
-    cmd_raw = feedforward_rpm(watts) + spike + damp + KP * err + state["integ"]
+    cmd_raw = feedforward_rpm(watts) + spike + damp + prof()["kp"] * err + state["integ"]
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
     if cmd_raw > FAN_MAX:
@@ -327,11 +338,12 @@ def control_tick(temp):
     elif cmd_raw < FAN_MIN:
         state["integ"] += 0.2 * (FAN_MIN - cmd_raw)
     cmd = max(FAN_MIN, min(FAN_MAX, cmd_raw))
-    rate_up = RATE_UP_3 if err > 15 else RATE_UP_2 if err > 5 else RATE_UP_1
-    delta = max(-RATE_DOWN, min(rate_up, cmd - state["rpm"]))
+    up = prof()["up"]
+    rate_up = up[2] if err > 15 else up[1] if err > 5 else up[0]
+    delta = max(-prof()["down"], min(rate_up, cmd - state["rpm"]))
     state["rpm"] += delta
 
-    if temp < RELEASE_TEMP:
+    if temp < prof()["target"] - 9.0:
         state["cool"] += 1
         if state["cool"] >= RELEASE_HOLD:
             set_auto("(temp=%.1f stable cool)" % temp)
@@ -350,8 +362,7 @@ def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
     load_model()
-    log("fanctld started (target=%s engage>%s release<%s up<=%s/%s/%s down<=%s rpm/tick)" %
-        (TARGET_TEMP, ENGAGE_TEMP, RELEASE_TEMP, int(RATE_UP_1), int(RATE_UP_2), int(RATE_UP_3), int(RATE_DOWN)))
+    log("fanctld started (profile=%s target=%s)" % (state["profile"], prof()["target"]))
     try:
         while True:
             if not on_ac_power():
