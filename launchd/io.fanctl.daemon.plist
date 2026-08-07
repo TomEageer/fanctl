@@ -14,7 +14,7 @@
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>30</integer>
     <key>StandardOutPath</key>
     <string>/var/log/fanctl.err</string>
     <key>StandardErrorPath</key>

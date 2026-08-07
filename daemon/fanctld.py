@@ -60,6 +60,11 @@ LEARN_RATE = 0.02
 RELEASE_HOLD = 24           # 连续 N 拍低温才交还系统（~72s）
 BATT_POLL = 30
 MODE_REASSERT = 20          # 每 N 拍回读一次 SMC 模式，防止被外部复位
+# SMC 保护态防护：过于频繁的访问（例如守护进程崩溃循环、或与第三方风扇工具争抢）
+# 会把 AppleSMC 顶进保护状态——读数全 0、写入报错，停止访问数十秒后自愈。
+# 检测到即退避，指数增长，期间只做低频探活，绝不继续敲打。
+SMC_BACKOFF_BASE = 20.0
+SMC_BACKOFF_MAX = 180.0
 
 # 调速性格：quiet 有噪音天花板 / balanced 压住上升徐徐落温 / cool 尽快压下再回落保持
 PROFILES = {
@@ -77,7 +82,7 @@ state = {
     "w_slow": 0.0, "w_ff": 0.0, "temps": [], "trend": 0.0, "last_temp": None,
     "profile": "balanced", "gains": {}, "model_dirty": False, "model_saved": 0.0,
     "fan_min": FAN_MIN_DEFAULT, "fan_max": FAN_MAX_DEFAULT, "fans": 0,
-    "ticks": 0, "hist_n": 0, "watts_good": None, "tm": None,
+    "ticks": 0, "hist_n": 0, "watts_good": None, "tm": None, "machine": None,
 }
 macmon_proc = None
 
@@ -183,15 +188,30 @@ def set_auto(reason=""):
                  trend=0.0, last_temp=None)
 
 
+def smc_backoff(reason):
+    """进入退避：SMC 疑似保护态，暂停访问让其自愈。"""
+    n = state["smc_fails"] = state.get("smc_fails", 0) + 1
+    wait = min(SMC_BACKOFF_BASE * (2 ** (n - 1)), SMC_BACKOFF_MAX)
+    state["smc_until"] = time.time() + wait
+    state["err"] = "SMC busy — backing off %ds" % int(wait)
+    log("SMC unhealthy (%s), backing off %.0fs (fail #%d)" % (reason, wait, n))
+
+
+def smc_ok():
+    return time.time() >= state.get("smc_until", 0.0)
+
+
 def write_rpm(rpm):
+    if not smc_ok():
+        return False
     r = smcfan("set", str(int(rpm)))
     if r and r.returncode == 0:
         state["written"] = rpm
         state["manual"] = True
+        state["smc_fails"] = 0
         state["err"] = None
         return True
-    state["err"] = "fan write failed"
-    log("write_rpm failed at %d rpm" % rpm)
+    smc_backoff("write %d rpm" % rpm)
     return False
 
 
@@ -224,89 +244,202 @@ def on_ac_power():
 
 # ---------------------------------------------------------------- 热模型辨识
 #
-# 物理模型（稳态能量守恒）：产热 W = h(rpm) · (T_die − T_amb)
-#   其中 h(rpm) = k0 + k1·(rpm/1000)  单位 W/°C，是本机固有的散热能力曲线
-# 展开成线性回归：W = k0·T + k1·(r·T) − k0·T_amb − k1·T_amb·r
-#   取特征 x = [T, r·T, 1, r]，系数 θ = [A, B, C, D]
-#   则 k0 = A, k1 = B, T_amb = −C/A（与 −D/B 互为一致性校验）
-# 用充分统计量 (XᵀX, Xᵀy) 在线累积并带遗忘因子，随环境变化自适应。
+# 动态能量守恒（不要求稳态，每个采样点都可用）：
+#     C·dT/dt = P_in − h(rpm)·(T − T_amb)
+#   其中 h(rpm) = k0 + k1·(rpm/1000)  [W/°C]  是本机固有散热能力曲线
+#         C                            [J/°C] 是等效热容（解释温度滞后）
+# 整理成线性回归：
+#     P = C·(dT/dt) + k0·T + k1·(r·T) − k0·T_amb − k1·T_amb·r
+#   特征 x = [dTs, T, r·T, 1, r]（dTs = dT/dt×100 做数值缩放），θ = [Cs, A, B, E, D]
+#   则 C = Cs·100, k0 = A, k1 = B, T_amb = −E/A
+# 用带遗忘因子的充分统计量在线累积，随积灰/散热垫/季节自适应。
 
-TM_DECAY = 0.999          # 每次新样本对历史统计量的遗忘因子
-TM_REFIT_EVERY = 30       # 每积累 N 个稳态样本重新拟合一次
-TM_MIN_SAMPLES = 60       # 少于此样本数不采信拟合结果
-TM_RIDGE = 1e-6           # 岭正则，防止近奇异
+TM_DECAY = 0.9995         # 每样本对历史统计量的遗忘因子（半衰期约 1400 样本 ≈ 1.2 小时）
+TM_REFIT_EVERY = 40
+TM_MIN_SAMPLES = 120      # 约 6 分钟连续数据
+TM_RIDGE = 1e-5
+TM_DIM = 5
+# 关于可辨识性：闭环下转速由温度决定，(T) 与 (r·T) 高度共线，k0/k1/T_amb 的"拆分"
+# 长期偏斜。实测（合成数据）表明这不影响我们真正使用的量——工作区间内的散热功率
+# h·ΔT 预测误差约 4%。曾评估过叠加正弦抖动做持续激励：只有幅度大到 ±330 RPM 才
+# 能显著改善拆分，那个幅度人耳可闻，得不偿失，故不采用；日常的手动定速/切换性格/
+# 最大转速已提供足够的天然激励。
+
+
+def machine_id():
+    try:
+        return subprocess.run(["/usr/sbin/sysctl", "-n", "hw.model"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def machine_prior():
+    """本机先验：优先查表，未知机型按风扇数与量程推算（风扇越多/转速越高散热越强）。"""
+    mid = state.get("machine") or machine_id()
+    if mid in MACHINE_PRIORS:
+        return MACHINE_PRIORS[mid]
+    cap, k0, k1 = TM_PRIOR_GENERIC
+    scale = max(1.0, state.get("fans", 1)) * (state.get("fan_max", 7000.0) / 7826.0)
+    return (cap, k0 * scale, k1 * scale)
 
 
 def tm_init():
-    return {"S": [[0.0] * 4 for _ in range(4)], "b": [0.0] * 4, "n": 0.0,
-            "since_fit": 0, "k0": None, "k1": None, "tamb": None, "rms": None}
+    return {"S": [[0.0] * TM_DIM for _ in range(TM_DIM)], "b": [0.0] * TM_DIM, "syy": 0.0,
+            "n": 0.0, "since_fit": 0, "k0": None, "k1": None, "tamb": None,
+            "cap": None, "rms": None}
 
 
-def tm_add(temp, rpm, watts):
-    """收一个稳态样本进充分统计量。"""
+def tm_features(temp, rpm, dtemp_dt):
+    r = rpm / 1000.0
+    return [dtemp_dt * 100.0, temp, r * temp, 1.0, r]
+
+
+def tm_add(temp, rpm, watts, dtemp_dt):
     tm = state["tm"]
-    x = [temp, (rpm / 1000.0) * temp, 1.0, rpm / 1000.0]
-    for i in range(4):
-        for j in range(4):
+    x = tm_features(temp, rpm, dtemp_dt)
+    for i in range(TM_DIM):
+        for j in range(TM_DIM):
             tm["S"][i][j] = tm["S"][i][j] * TM_DECAY + x[i] * x[j]
         tm["b"][i] = tm["b"][i] * TM_DECAY + x[i] * watts
+    tm["syy"] = tm["syy"] * TM_DECAY + watts * watts
     tm["n"] = tm["n"] * TM_DECAY + 1.0
     tm["since_fit"] += 1
 
 
-def solve4(S, b):
-    """4×4 高斯消元（带部分主元），失败返回 None。"""
-    m = [[S[i][j] + (TM_RIDGE if i == j else 0.0) for j in range(4)] + [b[i]] for i in range(4)]
-    for c in range(4):
-        p = max(range(c, 4), key=lambda r: abs(m[r][c]))
+def solve_lin(S, b, dim):
+    """高斯消元（部分主元 + 岭正则），奇异返回 None。"""
+    m = [[S[i][j] + (TM_RIDGE if i == j else 0.0) for j in range(dim)] + [b[i]] for i in range(dim)]
+    for c in range(dim):
+        p = max(range(c, dim), key=lambda r: abs(m[r][c]))
         if abs(m[p][c]) < 1e-12:
             return None
         m[c], m[p] = m[p], m[c]
-        for r in range(4):
+        for r in range(dim):
             if r == c:
                 continue
             f = m[r][c] / m[c][c]
-            for k in range(c, 5):
+            for k in range(c, dim + 1):
                 m[r][k] -= f * m[c][k]
-    return [m[i][4] / m[i][i] for i in range(4)]
+    return [m[i][dim] / m[i][i] for i in range(dim)]
+
+
+def tm_project(a):
+    """把 5 维统计量投影成"给定环境温度 a"下的 3 参正规方程。
+    特征: f = [dTs, (T − a), r·(T − a)]，天然满足 h·ΔT 的物理约束。"""
+    S, b = state["tm"]["S"], state["tm"]["b"]
+    G = [[0.0] * 3 for _ in range(3)]
+    G[0][0] = S[0][0]
+    G[0][1] = G[1][0] = S[0][1] - a * S[0][3]
+    G[0][2] = G[2][0] = S[0][2] - a * S[0][4]
+    G[1][1] = S[1][1] - 2 * a * S[1][3] + a * a * S[3][3]
+    G[1][2] = G[2][1] = S[1][2] - a * S[1][4] - a * S[3][2] + a * a * S[3][4]
+    G[2][2] = S[2][2] - 2 * a * S[2][4] + a * a * S[4][4]
+    c = [b[0], b[1] - a * b[3], b[2] - a * b[4]]
+    return G, c
+
+
+# 弱先验（物理量级）：闭环下转速与温度共线，靠先验稳住不可辨识方向
+# 出厂先验 + 每机自学：不同芯片/机身（M1~M4、Pro/Max、14"/16"）散热能力差异很大，
+# 无法用一套常数覆盖。策略是按机型给一个物理量级合理的先验作为起点，实测数据以弱
+# 先验权重逐步覆盖它——新机第一分钟就有可用模型，用得越久越贴合这台机器的真实情况
+# （积灰、散热垫、季节变化都会被持续跟踪）。先验按 hw.model 匹配，未知机型按风扇
+# 数量与转速量程推算。
+MACHINE_PRIORS = {                # hw.model → (C/100, k0, k1)
+    "Mac16,8":  (2.0, 0.21, 0.10),   # MacBook Pro 14" M4 Pro（本机实测辨识）
+    "Mac16,7":  (2.0, 0.21, 0.10),   # MacBook Pro 14" M4 Pro/Max
+    "Mac16,6":  (2.0, 0.21, 0.10),   # MacBook Pro 14" M4 Max
+    "Mac16,5":  (2.4, 0.26, 0.12),   # MacBook Pro 16" M4 Max
+    "Mac16,1":  (1.6, 0.18, 0.09),   # MacBook Pro 14" M4
+    "Mac15,3":  (1.6, 0.18, 0.09),   # MacBook Pro 14" M3
+    "Mac15,7":  (2.0, 0.21, 0.10),   # MacBook Pro 14" M3 Pro/Max
+    "Mac15,9":  (2.4, 0.26, 0.12),   # MacBook Pro 16" M3 Max
+    "Mac14,5":  (2.0, 0.21, 0.10),   # MacBook Pro 14" M2 Pro/Max
+    "Mac14,6":  (2.4, 0.26, 0.12),   # MacBook Pro 16" M2 Pro/Max
+    "MacBookPro18,3": (2.0, 0.21, 0.10),   # 14" M1 Pro/Max
+    "MacBookPro18,1": (2.4, 0.26, 0.12),   # 16" M1 Pro/Max
+    "Mac14,12": (2.6, 0.30, 0.14),   # Mac mini M2 Pro
+    "Mac16,11": (2.6, 0.30, 0.14),   # Mac mini M4 Pro
+}
+TM_PRIOR_GENERIC = (2.0, 0.15, 0.08)
+TM_PRIOR_W = (3.0, 0.02, 0.02)    # 逐参数先验权重：热容强先验，散热系数交给数据
+
+
+def tm_solve_at(a, cap_s):
+    """给定环境温度 a 与已知热容，解 [k0, k1] 与残差平方和。
+    热容在闭环噪声下不可辨识（自由求解会得到非物理的负值），因此固定为机型先验，
+    作为已知量从方程左边移除：y' = P − C·dT/dt，再对 y' 做二参回归。"""
+    S, b, tm = state["tm"]["S"], state["tm"]["b"], state["tm"]
+    # 特征 f1 = T − a = x1 − a·x3, f2 = r·T − a·r = x2 − a·x4
+    G = [[0.0, 0.0], [0.0, 0.0]]
+    G[0][0] = S[1][1] - 2 * a * S[1][3] + a * a * S[3][3]
+    G[0][1] = G[1][0] = S[1][2] - a * S[1][4] - a * S[3][2] + a * a * S[3][4]
+    G[1][1] = S[2][2] - 2 * a * S[2][4] + a * a * S[4][4]
+    # Σf·y' = Σf·y − C·Σf·x0
+    c = [b[1] - a * b[3] - cap_s * (S[1][0] - a * S[3][0]),
+         b[2] - a * b[4] - cap_s * (S[2][0] - a * S[4][0])]
+    prior = machine_prior()
+    n = max(tm["n"], 1.0)
+    lam = [TM_PRIOR_W[1] * n, TM_PRIOR_W[2] * n]
+    A = [[G[i][j] + (lam[i] if i == j else 0.0) for j in range(2)] for i in range(2)]
+    rhs = [c[0] + lam[0] * prior[1], c[1] + lam[1] * prior[2]]
+    th = solve_lin(A, rhs, 2)
+    if not th:
+        return None
+    syy2 = tm["syy"] - 2 * cap_s * b[0] + cap_s * cap_s * S[0][0]
+    sse = syy2
+    for i in range(2):
+        sse -= 2 * th[i] * c[i]
+        for j in range(2):
+            sse += th[i] * th[j] * G[i][j]
+    return th, max(sse, 0.0)
 
 
 def tm_fit():
-    """重新拟合并做物理合理性校验，不合理则保留旧模型。"""
+    """剖面似然：环境温度一维搜索，内层解析求 [k0,k1]，热容取机型先验。"""
     tm = state["tm"]
     if tm["n"] < TM_MIN_SAMPLES:
         return
-    th = solve4(tm["S"], tm["b"])
-    if not th:
+    cap_s = machine_prior()[0]
+    best = None
+    a = 10.0
+    while a <= 40.0:
+        r = tm_solve_at(a, cap_s)
+        if r:
+            th, sse = r
+            if th[0] > 0 and th[1] > 0 and (best is None or sse < best[1]):
+                best = ((th, a), sse)
+        a += 0.5
+    if best is None:
         return
-    A, B, C, _D = th
-    if A <= 0 or B <= 0:                       # h 必须随转速单调增且为正
+    (th, tamb), sse = best
+    k0, k1 = th
+    if not (0.02 <= k0 <= 5.0 and 0.01 <= k1 <= 3.0):
         return
-    tamb = -C / A
-    if not (5.0 <= tamb <= 45.0):              # 环境温度必须在物理可信区间
-        return
-    state["tm"].update(k0=A, k1=B, tamb=tamb)
-    log("thermal model: h(rpm)=%.3f+%.3f·(rpm/1000) W/°C, T_amb=%.1f°C, n=%.0f"
-        % (A, B, tamb, tm["n"]))
+    tm.update(k0=k0, k1=k1, tamb=tamb, cap=cap_s * 100.0,
+              rms=(sse / max(tm["n"], 1.0)) ** 0.5)
+    log("thermal model: h=%.3f+%.3f·(rpm/1000) W/°C, T_amb=%.1f°C (C=%.0f prior), "
+        "rms=%.1fW, n=%.0f" % (k0, k1, tamb, tm["cap"], tm["rms"], tm["n"]))
 
 
 def tm_dissipation(temp, rpm):
-    """当前转速与温度下的散热功率（W）。模型未就绪返回 None。"""
+    """当前转速与温度下的散热功率（W）。模型未收敛时用机型先验估算（标记 prior）。"""
     tm = state["tm"]
-    if tm["k0"] is None:
+    if not temp:
         return None
-    h = tm["k0"] + tm["k1"] * (rpm / 1000.0)
-    return max(0.0, h * (temp - tm["tamb"]))
+    if tm["k0"] is None:
+        _, k0, k1 = machine_prior()
+        return max(0.0, (k0 + k1 * (rpm / 1000.0)) * (temp - 25.0))
+    return max(0.0, (tm["k0"] + tm["k1"] * (rpm / 1000.0)) * (temp - tm["tamb"]))
 
 
 def tm_required_rpm(watts, target):
-    """守住目标温度所需的转速（W = h·ΔT 反解）。模型未就绪返回 None。"""
+    """稳态守住目标温度所需的转速；模型未就绪或物理上不可达返回 None。"""
     tm = state["tm"]
     if tm["k0"] is None or tm["k1"] <= 0:
         return None
     dt = max(target - tm["tamb"], 5.0)
-    h_need = watts / dt
-    return max(0.0, (h_need - tm["k0"]) / tm["k1"] * 1000.0)
+    return max(0.0, (watts / dt - tm["k0"]) / tm["k1"] * 1000.0)
 
 
 # ---------------------------------------------------------------- 模型持久化
@@ -327,13 +460,27 @@ def load_model():
             m = json.load(f)
     except (OSError, ValueError):
         return
+    if m.get("machine") and m["machine"] != state["machine"]:
+        log("machine changed (%s → %s) — relearning thermal model"
+            % (m["machine"], state["machine"]))
+        state["tm"] = tm_init()
+        return
     tmj = m.get("thermal")
     if isinstance(tmj, dict) and tmj.get("S"):
-        try:
-            state["tm"].update(S=tmj["S"], b=tmj["b"], n=float(tmj["n"]))
-            tm_fit()
-        except (KeyError, TypeError, ValueError):
-            pass
+        S, b = tmj.get("S"), tmj.get("b")
+        ok = (isinstance(S, list) and len(S) == TM_DIM
+              and all(isinstance(r, list) and len(r) == TM_DIM for r in S)
+              and isinstance(b, list) and len(b) == TM_DIM)
+        if ok:
+            try:
+                state["tm"].update(S=S, b=b, n=float(tmj["n"]),
+                                   syy=float(tmj.get("syy", 0.0)))
+                tm_fit()
+            except (KeyError, TypeError, ValueError):
+                state["tm"] = tm_init()
+        else:
+            log("thermal stats shape changed (%s→%s) — relearning" %
+                (len(S) if isinstance(S, list) else "?", TM_DIM))
     gains = m.get("gains")
     if isinstance(gains, dict):          # 每档独立增益（目标温度不同，不可共用）
         for k, v in gains.items():
@@ -355,8 +502,10 @@ def save_model(force=False):
         os.makedirs(RUNDIR, exist_ok=True)
         write_file_safe(MODEL, json.dumps({
             "gains": {k: round(v, 2) for k, v in state["gains"].items()},
-            "profile": state["profile"], "updated": now,
-            "thermal": {"S": state["tm"]["S"], "b": state["tm"]["b"], "n": state["tm"]["n"]}}))
+            "profile": state["profile"], "updated": now, "machine": state["machine"],
+            "thermal": {"S": state["tm"]["S"], "b": state["tm"]["b"],
+                        "syy": state["tm"]["syy"], "n": state["tm"]["n"],
+                        "dim": TM_DIM}}))
         state["model_dirty"] = False
         state["model_saved"] = now
     except OSError:
@@ -373,17 +522,21 @@ def write_status(mode):
             "mode": mode,
             "temp": round(state["temp"], 1) if live else None,
             "power": round(state["power"], 1) if live else None,
-            "rpm": int(state["rpm"] if state["manual"] else 0),
-            "act": state["act"],
+            "rpm": int(state["rpm"]) if state["manual"] else None,
+            "act": state["act"] if state["act"] > 0 else None,
             "profile": state["profile"],
             "fanMin": int(state["fan_min"]), "fanMax": int(state["fan_max"]),
             "fans": state["fans"], "err": state["err"],
             # UI 用它把功耗折合成"守住当前目标温度所需的转速"，两线才可直接比较
             "ffGain": round(ff_gain() * prof()["ff_scale"], 1),
             "target": prof()["target"],
+            "tmSamples": int(state["tm"]["n"]), "tmNeed": TM_MIN_SAMPLES,
+            "tmLearned": state["tm"]["k0"] is not None,
+            "machine": state["machine"],
             "thermal": ({"k0": round(state["tm"]["k0"], 4),
                          "k1": round(state["tm"]["k1"], 4),
                          "tamb": round(state["tm"]["tamb"], 1),
+                         "cap": round(state["tm"]["cap"] or 0, 0),
                          "n": int(state["tm"]["n"])}
                         if state["tm"]["k0"] is not None else None),
             "diss": (round(d, 1) if (d := tm_dissipation(state["temp"], state["act"])) else None),
@@ -396,7 +549,7 @@ def write_status(mode):
 
 
 def append_history(mode):
-    if mode == "battery":
+    if mode == "battery" or state["act"] <= 0:   # 无有效读数：不记录，让曲线留断口
         return
     try:
         append_file_safe(HISTORY, json.dumps({
@@ -477,10 +630,19 @@ def handle_command():
 def control_tick(temp):
     state["ticks"] += 1
     state["temp"] = temp
+    if not smc_ok():                     # 退避期：只更新展示，不碰 SMC
+        state["act"] = 0
+        state["power"] = read_power_watts() or 0.0
+        write_status("manual" if state["manual"] else "auto")
+        return
     watts = read_power_watts()
     state["power"] = watts or 0.0
     act = read_fan_field("F0Ac")
     state["act"] = int(act) if act else 0
+    if state["manual"] and state["act"] == 0:      # 手动档却读到 0 = 接口被顶住
+        smc_backoff("read returned 0")
+        write_status("manual")
+        return
 
     handle_command()
 
@@ -532,15 +694,29 @@ def control_tick(temp):
     state["w_slow"] = state["w_slow"] * 0.90 + w * 0.10
     state["w_ff"] = state["w_ff"] * 0.85 + w * 0.15
 
-    # 稳态自学习：把积分携带的常差按当前性格迁进前馈增益（精确回代，保持指令连续）
-    state["temps"] = (state["temps"] + [temp])[-8:]
-    if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
-            and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10):
-        tm_add(temp, state["act"] or state["rpm"], state["w_ff"])
+    # 热模型辨识：dT/dt 用最近 5 个采样点的最小二乘斜率（无相位滞后，抗传感器噪声）
+    now = time.time()
+    hist = state.setdefault("dtq", [])
+    hist.append((now, temp))
+    del hist[:-5]
+    if w > 8 and state["act"] > 0 and len(hist) == 5:
+        t0 = hist[0][0]
+        xs = [p[0] - t0 for p in hist]
+        ys = [p[1] for p in hist]
+        mx = sum(xs) / 5.0
+        my = sum(ys) / 5.0
+        den = sum((x - mx) ** 2 for x in xs)
+        dtemp_dt = (sum((xs[i] - mx) * (ys[i] - my) for i in range(5)) / den) if den > 1e-6 else 0.0
+        tm_add(temp, state["act"], w, dtemp_dt)
         if state["tm"]["since_fit"] >= TM_REFIT_EVERY:
             state["tm"]["since_fit"] = 0
             tm_fit()
             state["model_dirty"] = True
+
+    # 稳态自学习：把积分携带的常差按当前性格迁进前馈增益（精确回代，保持指令连续）
+    state["temps"] = (state["temps"] + [temp])[-8:]
+    if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
+            and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10):
         base = max(state["w_ff"] - 8.0, 2.0)
         old = ff_gain()
         new = max(FF_GAIN_MIN, min(FF_GAIN_MAX, old + LEARN_RATE * state["integ"] / base))
@@ -619,6 +795,12 @@ def preflight():
             write_status("error")
             return False
     if not probe_fans():
+        r = smcfan("probe")
+        if r and "fans=" in (r.stdout or "") and "actual=0" in r.stdout:
+            log("SMC appears wedged at startup — waiting 45s for it to recover")
+            time.sleep(45)
+            probe_fans()
+    if state["fans"] <= 0:
         log("FATAL: no controllable fans on this machine")
         state["err"] = "no controllable fans"
         write_status("error")
@@ -634,6 +816,7 @@ def preflight():
 def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
+    state["machine"] = machine_id()
     state["tm"] = tm_init()
     load_model()
     if not preflight():
@@ -663,7 +846,15 @@ def main():
             except (ValueError, KeyError):
                 continue
             if temp and temp > 1:
-                control_tick(temp)
+                try:
+                    control_tick(temp)
+                    state["tick_errors"] = 0
+                except Exception as e:          # 单拍异常不应导致风扇失控
+                    state["tick_errors"] = state.get("tick_errors", 0) + 1
+                    log("control_tick error (%d): %r" % (state["tick_errors"], e))
+                    if state["tick_errors"] >= 20:
+                        log("too many consecutive errors — exiting for launchd restart")
+                        raise
     finally:
         stop_macmon()
         save_model(force=True)

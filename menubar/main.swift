@@ -265,7 +265,14 @@ final class ChartView: NSView {
                           mode: o["mode"] as? String ?? "auto",
                           pf: o["pf"] as? String ?? "balanced")
         }
-        samples = smoothed(samples, window: 9)
+        // 时间戳必须单调：并发写入/文件修剪可能造成乱序，排序去重后再绘制，
+        // 否则样条会出现"向后回勾"的非物理曲线
+        samples.sort { $0.ts < $1.ts }
+        var dedup: [Sample] = []
+        for smp in samples where dedup.last.map({ smp.ts > $0.ts }) ?? true {
+            dedup.append(smp)
+        }
+        samples = smoothed(dedup, window: 9)
         needsDisplay = true
     }
 
@@ -365,38 +372,62 @@ final class ChartView: NSView {
         if thermal != nil {
             // 产热（紫虚线）与散热（青实线）同为瓦特：青线在上 = 正在降温
             NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
-            let hp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyWatt($0.w)) }, lineWidth: 1.0)
-            hp.setLineDash([4, 3], count: 2, phase: 0)
-            hp.stroke()
+            strokeSeries(samples.map { (px($0.ts), pyWatt($0.w), $0.ts) }, lineWidth: 1.0, dashed: true)
             NSColor.systemTeal.setStroke()
-            splinePath(samples.map {
-                NSPoint(x: px($0.ts), y: pyWatt(dissipation(rpm: $0.rpm, temp: $0.temp) ?? 0))
-            }, lineWidth: 1.2).stroke()
+            strokeSeries(samples.compactMap { s in
+                dissipation(rpm: s.rpm, temp: s.temp).map { (px(s.ts), pyWatt($0), s.ts) }
+            }, lineWidth: 1.2)
         } else {
             if samples.contains(where: { $0.w > 0 }) {
                 NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
-                let wp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyW($0.w)) }, lineWidth: 1.0)
-                wp.setLineDash([4, 3], count: 2, phase: 0)
-                wp.stroke()
+                strokeSeries(samples.map { (px($0.ts), pyW($0.w), $0.ts) }, lineWidth: 1.0, dashed: true)
             }
             NSColor.systemTeal.setStroke()
-            splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
+            strokeSeries(samples.map { (px($0.ts), pyR($0.rpm), $0.ts) }, lineWidth: 1.0)
         }
 
         NSColor.labelColor.setStroke()
-        splinePath(samples.map { NSPoint(x: px($0.ts), y: pyT($0.temp)) }, lineWidth: 1.6).stroke()
+        strokeSeries(samples.map { (px($0.ts), pyT($0.temp), $0.ts) }, lineWidth: 1.6)
         NSGraphicsContext.current?.restoreGraphicsState()
         NSGraphicsContext.current?.saveGraphicsState()
     }
 
-    /// 抽稀 + Catmull-Rom 样条：把离散点画成处处圆滑的曲线
+    /// 按采样间隔切分连续段：数据缺失处留断口，不用直线跨接假装连续
+    private func runs(_ pts: [(x: CGFloat, y: CGFloat, ts: Double)]) -> [[NSPoint]] {
+        var out: [[NSPoint]] = []
+        var cur: [NSPoint] = []
+        var lastTs: Double? = nil
+        for p in pts {
+            if let l = lastTs, p.ts - l > 20 {      // 超过 20 秒无样本视为断开
+                if cur.count > 1 { out.append(cur) }
+                cur = []
+            }
+            cur.append(NSPoint(x: p.x, y: p.y))
+            lastTs = p.ts
+        }
+        if cur.count > 1 { out.append(cur) }
+        return out
+    }
+
+    private func strokeSeries(_ pts: [(x: CGFloat, y: CGFloat, ts: Double)],
+                              lineWidth: CGFloat, dashed: Bool = false) {
+        for seg in runs(pts) {
+            let p = splinePath(seg, lineWidth: lineWidth)
+            if dashed { p.setLineDash([4, 3], count: 2, phase: 0) }
+            p.stroke()
+        }
+    }
+
+    /// 抽稀 + 向心参数化 Catmull-Rom 样条。
+    /// 均匀参数化在数据剧变处（例如读数中断造成的近垂直跳变）会过冲并自交，
+    /// 表现为曲线"向后回勾"；向心参数化（α=0.5）在数学上保证无尖点、无自交。
     private func splinePath(_ raw: [NSPoint], lineWidth: CGFloat) -> NSBezierPath {
         var pts = raw
-        let maxPts = Int(bounds.width / 2.5)          // ~每 2.5px 一个点足够
+        let maxPts = max(4, Int(bounds.width / 2.5))
         if pts.count > maxPts {
             let step = Double(pts.count) / Double(maxPts)
             pts = (0..<maxPts).map { raw[min(raw.count - 1, Int(Double($0) * step))] }
-            pts.append(raw[raw.count - 1])
+            if let last = raw.last, pts.last != last { pts.append(last) }
         }
         let path = NSBezierPath()
         path.lineWidth = lineWidth
@@ -409,13 +440,36 @@ final class ChartView: NSView {
             }
             return path
         }
+
+        func dist(_ a: NSPoint, _ b: NSPoint) -> CGFloat {
+            max(sqrt(pow(b.x - a.x, 2) + pow(b.y - a.y, 2)), 1e-4)
+        }
+
         path.move(to: pts[0])
         for i in 0..<(pts.count - 1) {
             let p0 = i > 0 ? pts[i - 1] : pts[i]
             let p1 = pts[i], p2 = pts[i + 1]
             let p3 = i + 2 < pts.count ? pts[i + 2] : p2
-            let c1 = NSPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6)
-            let c2 = NSPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6)
+            // 向心参数化：结点间距取欧氏距离的 0.5 次幂
+            let d1 = pow(dist(p0, p1), 0.5)
+            let d2 = pow(dist(p1, p2), 0.5)
+            let d3 = pow(dist(p2, p3), 0.5)
+            var c1 = NSPoint(x: p1.x + (p2.x - p1.x) / 3, y: p1.y + (p2.y - p1.y) / 3)
+            var c2 = NSPoint(x: p2.x - (p2.x - p1.x) / 3, y: p2.y - (p2.y - p1.y) / 3)
+            let k1 = 3 * d1 * (d1 + d2), k2 = 3 * d3 * (d3 + d2)
+            if k1 > 1e-6 {
+                c1 = NSPoint(
+                    x: (d1 * d1 * p2.x - d2 * d2 * p0.x + (2 * d1 * d1 + 3 * d1 * d2 + d2 * d2) * p1.x) / k1,
+                    y: (d1 * d1 * p2.y - d2 * d2 * p0.y + (2 * d1 * d1 + 3 * d1 * d2 + d2 * d2) * p1.y) / k1)
+            }
+            if k2 > 1e-6 {
+                c2 = NSPoint(
+                    x: (d3 * d3 * p1.x - d2 * d2 * p3.x + (2 * d3 * d3 + 3 * d3 * d2 + d2 * d2) * p2.x) / k2,
+                    y: (d3 * d3 * p1.y - d2 * d2 * p3.y + (2 * d3 * d3 + 3 * d3 * d2 + d2 * d2) * p2.y) / k2)
+            }
+            // 兜底：控制点的 x 必须落在区段内，杜绝任何情况下的时间轴回退
+            c1.x = min(max(c1.x, p1.x), p2.x)
+            c2.x = min(max(c2.x, p1.x), p2.x)
             path.curve(to: p2, controlPoint1: c1, controlPoint2: c2)
         }
         return path
@@ -440,6 +494,11 @@ final class ChartView: NSView {
             drawText(name, at: NSPoint(x: x + 10, y: 4), size: 9, color: .secondaryLabelColor)
             x += 10 + name.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
         }
+        NSColor.labelColor.setStroke()
+        let segT = NSBezierPath(); segT.lineWidth = 2
+        segT.move(to: NSPoint(x: x, y: 10)); segT.line(to: NSPoint(x: x + 12, y: 10)); segT.stroke()
+        drawText(T("cpuTemp"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        x += 15 + T("cpuTemp").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
         NSColor.systemTeal.setStroke()
         let seg = NSBezierPath(); seg.lineWidth = 2
         seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
@@ -759,7 +818,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             speed.actual = act > 0 ? act : fanMin
             speed.setpoint = (mode == "custom") ? rpm : nil
             speed.needsDisplay = true
-            speedLabel.stringValue = act > 0 ? "\(Int(act)) RPM" : "--"
+            speedLabel.stringValue = (j["act"] as? NSNumber).map { "\($0.intValue) RPM" } ?? T("noData")
         }
     }
 }
@@ -1240,7 +1299,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let tempOpt  = (j["temp"]  as? NSNumber)?.doubleValue     // 电池模式为 null
         let powerOpt = (j["power"] as? NSNumber)?.doubleValue
         let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
-        let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
+        let actOpt = (j["act"]  as? NSNumber)?.doubleValue
+        let act   = actOpt ?? 0
         let ts    = (j["ts"]    as? NSNumber)?.doubleValue ?? 0
         let mode  = j["mode"] as? String ?? "?"
         let stale = Date().timeIntervalSince1970 - ts > 90 || tempOpt == nil
@@ -1278,10 +1338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             speedControl.setpoint = (mode == "custom") ? rpm : nil
             speedControl.isEnabled = (mode != "battery")
             speedControl.needsDisplay = true
-            if mode == "custom", abs(act - rpm) > 150 {
-                speedLabel.stringValue = "\(T("rpm"))　\(Int(act)) → \(Int(rpm)) RPM"
+            if let a = actOpt, mode == "custom", abs(a - rpm) > 150 {
+                speedLabel.stringValue = "\(T("rpm"))　\(Int(a)) → \(Int(rpm)) RPM"
             } else {
-                speedLabel.stringValue = act > 0 ? "\(T("rpm"))　\(Int(act)) RPM" : "\(T("rpm"))　--"
+                speedLabel.stringValue = "\(T("rpm"))　" + (actOpt.map { "\(Int($0)) RPM" } ?? T("noData"))
             }
         }
     }
