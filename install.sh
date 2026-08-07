@@ -10,7 +10,6 @@ REAL_UID=$(id -u "$REAL_USER")
 [ -f build/smcfan ] || { echo "请先 make"; exit 1; }
 
 # 停掉旧版本（含早期 com.tom.fanctl 命名）
-launchctl bootout system/io.fanctl.daemon 2>/dev/null || true
 launchctl bootout system/com.tom.fanctl  2>/dev/null || true
 rm -f /Library/LaunchDaemons/com.tom.fanctl.plist /usr/local/libexec/fanctl.py
 pkill -f fanctld.py 2>/dev/null || true
@@ -21,7 +20,15 @@ install -o root -g wheel -m 755 build/smcfan       /usr/local/bin/smcfan
 install -o root -g wheel -m 755 bin/fanctl         /usr/local/bin/fanctl
 install -o root -g wheel -m 644 daemon/fanctld.py  /usr/local/libexec/fanctld.py
 install -o root -g wheel -m 644 launchd/io.fanctl.daemon.plist /Library/LaunchDaemons/
-launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist
+launchctl bootout system/io.fanctl.daemon 2>/dev/null || true
+# 等旧实例完全退出（bootout 是异步的，紧跟 bootstrap 会竞态失败）
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print system/io.fanctl.daemon >/dev/null 2>&1 || break
+    sleep 0.5
+done
+launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist \
+    || { sleep 2; launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist; }
+launchctl print system/io.fanctl.daemon >/dev/null 2>&1 || { echo "错误：后台服务注册失败"; exit 1; }
 
 rm -rf /Applications/Fanctl.app
 cp -R build/Fanctl.app /Applications/

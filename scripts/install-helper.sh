@@ -14,5 +14,12 @@ if [ ! -x /opt/homebrew/bin/macmon ] && [ -f "$RES/macmon" ]; then
 fi
 install -o root -g wheel -m 644 "$RES/io.fanctl.daemon.plist" /Library/LaunchDaemons/
 launchctl bootout system/io.fanctl.daemon 2>/dev/null || true
-launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist
+# 等旧实例完全退出（bootout 是异步的，紧跟 bootstrap 会竞态失败）
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print system/io.fanctl.daemon >/dev/null 2>&1 || break
+    sleep 0.5
+done
+launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist \
+    || { sleep 2; launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist; }
+launchctl print system/io.fanctl.daemon >/dev/null 2>&1 || { echo "错误：后台服务注册失败"; exit 1; }
 echo ok
