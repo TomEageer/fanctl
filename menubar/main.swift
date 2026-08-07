@@ -101,6 +101,20 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "lgTemp":       ["en": "Temp", "zh": "温度", "ja": "温度", "ko": "온도",
+                     "es": "Temp", "fr": "Temp", "de": "Temp", "ru": "Темп"],
+    "lgCooling":    ["en": "Cooling", "zh": "散热", "ja": "放熱", "ko": "방열",
+                     "es": "Disip.", "fr": "Dissip.", "de": "Kühlung", "ru": "Отвод"],
+    "lgHeat":       ["en": "Heat", "zh": "产热", "ja": "発熱", "ko": "발열",
+                     "es": "Calor", "fr": "Chaleur", "de": "Wärme", "ru": "Тепло"],
+    "lgPower":      ["en": "Power", "zh": "功耗", "ja": "電力", "ko": "전력",
+                     "es": "Cons.", "fr": "Conso", "de": "Leistung", "ru": "Мощн."],
+    "lgRpm":        ["en": "RPM", "zh": "转速", "ja": "回転", "ko": "회전",
+                     "es": "RPM", "fr": "RPM", "de": "U/min", "ru": "Об/м"],
+    "lgSystem":     ["en": "System", "zh": "系统", "ja": "システム", "ko": "시스템",
+                     "es": "Sistema", "fr": "Système", "de": "System", "ru": "Система"],
+    "lgManual":     ["en": "Manual", "zh": "手动", "ja": "手動", "ko": "수동",
+                     "es": "Manual", "fr": "Manuel", "de": "Manuell", "ru": "Ручной"],
     "heatIn":       ["en": "Heat produced", "zh": "产热量", "ja": "発熱量", "ko": "발열량",
                      "es": "Calor generado", "fr": "Chaleur produite", "de": "Wärmeerzeugung", "ru": "Тепловыделение"],
     "heatOut":      ["en": "Heat removed", "zh": "散热量", "ja": "放熱量", "ko": "방열량",
@@ -228,7 +242,7 @@ final class ChartView: NSView {
     let windowOptions: [(String, Double)] = [(T("win10"), 600), (T("win30"), 1800), (T("win1h"), 3600), (T("win2h"), 7200)]
     var segmented: NSSegmentedControl!
 
-    private let padL: CGFloat = 42, padR: CGFloat = 36, padT: CGFloat = 26, padB: CGFloat = 50
+    private let padL: CGFloat = 42, padR: CGFloat = 36, padT: CGFloat = 26, padB: CGFloat = 56
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -476,40 +490,47 @@ final class ChartView: NSView {
     }
 
     private func drawLegend() {
-        // 第一行：智能调速三档深浅
-        var x: CGFloat = padL
-        drawText(T("smart") + ":", at: NSPoint(x: x, y: 19), size: 9, color: .secondaryLabelColor)
-        x += (T("smart") + ":").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 8
-        for (alpha, key) in [(0.25, "pQuiet"), (0.55, "pBalanced"), (1.0, "pCool")] {
-            NSColor.systemBlue.withAlphaComponent(alpha).setFill()
+        let f = NSFont.systemFont(ofSize: 9)
+        func w(_ t: String) -> CGFloat { t.size(withAttributes: [.font: f]).width }
+
+        // 上行：背景底纹代表的运行模式
+        let dots: [(NSColor, String)] = [
+            (NSColor.systemBlue.withAlphaComponent(0.30), T("pQuiet")),
+            (NSColor.systemBlue.withAlphaComponent(0.60), T("pBalanced")),
+            (NSColor.systemBlue, T("pCool")),
+            (.systemOrange, T("lgManual")),
+            (.systemGray, T("lgSystem")),
+        ]
+        let dotsWidth = dots.reduce(0) { $0 + 7 + 4 + w($1.1) }
+        var gap = max(6, min(14, (bounds.width - padL - 6 - dotsWidth) / CGFloat(dots.count - 1)))
+        var x = padL
+        for (c, name) in dots {
+            c.setFill()
             NSBezierPath(ovalIn: NSRect(x: x, y: 21, width: 7, height: 7)).fill()
-            drawText(T(key), at: NSPoint(x: x + 10, y: 18), size: 9, color: .secondaryLabelColor)
-            x += 10 + T(key).size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
+            drawText(name, at: NSPoint(x: x + 11, y: 18), size: 9, color: .secondaryLabelColor)
+            x += 7 + 4 + w(name) + gap
         }
-        // 第二行：手动定速 / 系统调度 / 转速线
+
+        // 下行：三条曲线的线型
+        let lines: [(NSColor, String, Bool)] = [
+            (.labelColor, T("lgTemp"), false),
+            (.systemTeal, thermal != nil ? T("lgCooling") : T("lgRpm"), false),
+            (NSColor.systemPurple.withAlphaComponent(0.85),
+             thermal != nil ? T("lgHeat") : T("lgPower"), true),
+        ]
+        let linesWidth = lines.reduce(0) { $0 + 14 + 4 + w($1.1) }
+        gap = max(10, min(24, (bounds.width - padL - 6 - linesWidth) / CGFloat(lines.count - 1)))
         x = padL
-        for (mode, name) in [("custom", T("manual")), ("auto", T("systemSched"))] {
-            modeColor(mode).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x, y: 7, width: 7, height: 7)).fill()
-            drawText(name, at: NSPoint(x: x + 10, y: 4), size: 9, color: .secondaryLabelColor)
-            x += 10 + name.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
+        for (c, name, dashed) in lines {
+            c.setStroke()
+            let seg = NSBezierPath()
+            seg.lineWidth = 2
+            if dashed { seg.setLineDash([4, 3], count: 2, phase: 0) }
+            seg.move(to: NSPoint(x: x, y: 7)); seg.line(to: NSPoint(x: x + 14, y: 7))
+            seg.stroke()
+            drawText(name, at: NSPoint(x: x + 18, y: 3), size: 9, color: .secondaryLabelColor)
+            x += 14 + 4 + w(name) + gap
         }
-        NSColor.labelColor.setStroke()
-        let segT = NSBezierPath(); segT.lineWidth = 2
-        segT.move(to: NSPoint(x: x, y: 10)); segT.line(to: NSPoint(x: x + 12, y: 10)); segT.stroke()
-        drawText(T("cpuTemp"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
-        x += 15 + T("cpuTemp").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
-        NSColor.systemTeal.setStroke()
-        let seg = NSBezierPath(); seg.lineWidth = 2
-        seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
-        let tealName = thermal != nil ? T("heatOut") : T("rpm")
-        drawText(tealName, at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
-        x += 15 + tealName.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
-        NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
-        let seg2 = NSBezierPath(); seg2.lineWidth = 2
-        seg2.setLineDash([4, 3], count: 2, phase: 0)
-        seg2.move(to: NSPoint(x: x, y: 10)); seg2.line(to: NSPoint(x: x + 12, y: 10)); seg2.stroke()
-        drawText(thermal != nil ? T("heatIn") : T("sysPower"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -593,9 +614,9 @@ final class PanelController: NSObject, NSWindowDelegate {
     let window: NSWindow
     let tempBig = NSTextField(labelWithString: "--")
     let subLine = NSTextField(labelWithString: "--")
-    let chart = ChartView(frame: NSRect(x: 24, y: 96, width: 340, height: 186))
+    let chart = ChartView(frame: NSRect(x: 24, y: 96, width: 340, height: 196))
     let speedLabel = NSTextField(labelWithString: "--")
-    let speed = SpeedControlView(frame: NSRect(x: 24, y: 352, width: 340, height: 24))
+    let speed = SpeedControlView(frame: NSRect(x: 24, y: 362, width: 340, height: 24))
     var smartPop: NSPopUpButton!
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
@@ -618,7 +639,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 676),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 686),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
@@ -626,7 +647,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if #available(macOS 11.0, *) { window.subtitle = "v\(appVersion)" }
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 676))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 686))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -638,10 +659,10 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         root.addSubview(chart)
 
-        root.addSubview(separator(y: 296))
-        root.addSubview(sectionLabel(T("fanSpeed"), y: 308))
+        root.addSubview(separator(y: 306))
+        root.addSubview(sectionLabel(T("fanSpeed"), y: 318))
         speedLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
-        speedLabel.frame = NSRect(x: 24, y: 326, width: 340, height: 20)
+        speedLabel.frame = NSRect(x: 24, y: 336, width: 340, height: 20)
         root.addSubview(speedLabel)
         speed.onDrag = { [weak self] rpm in
             self?.speedLabel.stringValue = "\(rpm) RPM · \(T("manual"))（\(T("releaseApply"))）"
@@ -653,7 +674,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(speed)
 
         let bw: CGFloat = (340 - 16) / 3
-        smartPop = NSPopUpButton(frame: NSRect(x: 24, y: 392, width: bw + 14, height: 32), pullsDown: true)
+        smartPop = NSPopUpButton(frame: NSRect(x: 24, y: 402, width: bw + 14, height: 32), pullsDown: true)
         smartPop.addItem(withTitle: T("smart"))
         for (code, key) in [("quiet", "pQuiet"), ("balanced", "pBalanced"), ("cool", "pCool")] {
             smartPop.addItem(withTitle: T(key))
@@ -668,26 +689,26 @@ final class PanelController: NSObject, NSWindowDelegate {
             b.controlSize = .large
             b.font = .systemFont(ofSize: 12)
             b.identifier = NSUserInterfaceItemIdentifier(verb)
-            b.frame = NSRect(x: 24 + 14 + CGFloat(i + 1) * (bw + 8), y: 392, width: bw - 7, height: 32)
+            b.frame = NSRect(x: 24 + 14 + CGFloat(i + 1) * (bw + 8), y: 402, width: bw - 7, height: 32)
             root.addSubview(b)
         }
 
-        root.addSubview(separator(y: 434))
+        root.addSubview(separator(y: 444))
         root.addSubview(sectionLabel(T("settings"), y: 446))
-        loginBox.frame = NSRect(x: 24, y: 468, width: 340, height: 20)
+        loginBox.frame = NSRect(x: 24, y: 478, width: 340, height: 20)
         loginBox.target = self; loginBox.action = #selector(toggleLogin)
-        iconBox.frame = NSRect(x: 24, y: 492, width: 340, height: 20)
+        iconBox.frame = NSRect(x: 24, y: 502, width: 340, height: 20)
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
-        powerBox.frame = NSRect(x: 24, y: 516, width: 340, height: 20)
+        powerBox.frame = NSRect(x: 24, y: 526, width: 340, height: 20)
         powerBox.target = self; powerBox.action = #selector(togglePower)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
         root.addSubview(powerBox)
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
-        langLabel.frame = NSRect(x: 24, y: 544, width: 110, height: 20)
+        langLabel.frame = NSRect(x: 24, y: 554, width: 110, height: 20)
         root.addSubview(langLabel)
-        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 540, width: 226, height: 26))
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 550, width: 226, height: 26))
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
             pop.addItem(withTitle: code == nil ? T("langSystem") : name)
@@ -699,7 +720,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(pop)
 
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 572, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 582, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -708,25 +729,25 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 620, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 630, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 620, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 630, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
         let ver = NSTextField(labelWithString: "Fanctl v\(appVersion)")
         ver.font = .systemFont(ofSize: 11)
         ver.textColor = .tertiaryLabelColor
-        ver.frame = NSRect(x: 24, y: 646, width: 150, height: 16)
+        ver.frame = NSRect(x: 24, y: 656, width: 150, height: 16)
         root.addSubview(ver)
         let upd = NSButton(title: T("checkUpdate"), target: self, action: #selector(checkUpd))
         upd.isBordered = false
         upd.contentTintColor = .linkColor
         upd.font = .systemFont(ofSize: 11)
-        upd.frame = NSRect(x: 228, y: 644, width: 140, height: 18)
+        upd.frame = NSRect(x: 228, y: 654, width: 140, height: 18)
         root.addSubview(upd)
 
         window.contentView = root
@@ -1025,7 +1046,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var updItem: NSMenuItem!
     var speedLabel: NSTextField!
     let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 2, width: 292, height: 24))
-    let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 176))
+    let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 186))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 单实例守卫：已有同 bundle id 实例在跑则直接退出（防手动启动/LaunchAgent 双开）
