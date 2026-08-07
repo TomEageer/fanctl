@@ -113,7 +113,7 @@ def read_power_watts():
 def feedforward_rpm(watts):
     if watts is None:
         return FAN_MIN
-    return min(FAN_MAX, FAN_MIN + max(0.0, watts - 8.0) * 140.0)
+    return min(FAN_MAX, FAN_MIN + max(0.0, watts - 8.0) * 110.0)
 
 
 def write_status(mode):
@@ -260,8 +260,14 @@ def control_tick(temp):
 
     err = temp - TARGET_TEMP
     state["integ"] = max(-1500.0, min(FAN_MAX - FAN_MIN, state["integ"] + KI * err))
-    cmd = feedforward_rpm(watts) + KP * err + state["integ"]
-    cmd = max(FAN_MIN, min(FAN_MAX, cmd))
+    cmd_raw = feedforward_rpm(watts) + KP * err + state["integ"]
+    # 抗饱和反算（anti-windup back-calculation）：
+    # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
+    if cmd_raw > FAN_MAX:
+        state["integ"] -= 0.2 * (cmd_raw - FAN_MAX)
+    elif cmd_raw < FAN_MIN:
+        state["integ"] += 0.2 * (FAN_MIN - cmd_raw)
+    cmd = max(FAN_MIN, min(FAN_MAX, cmd_raw))
     rate_up = RATE_UP_3 if err > 15 else RATE_UP_2 if err > 5 else RATE_UP_1
     delta = max(-RATE_DOWN, min(rate_up, cmd - state["rpm"]))
     state["rpm"] += delta
