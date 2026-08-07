@@ -2,7 +2,7 @@
 
 **[English README](README.md)**
 
-![Fanctl 菜单栏](docs/images/menubar.png)
+![Fanctl 菜单栏](docs/images/menubar-zh.png)
 
 Apple Silicon Mac 智能风扇温控套件 — 功耗前馈 + PI 反馈 + 温柔调速。
 Smart fan control for Apple Silicon Macs — power feedforward + PI feedback + gentle slew-rate limiting.
