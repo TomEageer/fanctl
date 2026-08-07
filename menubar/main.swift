@@ -99,6 +99,14 @@ let L10N: [String: [String: String]] = [
                      "es": "Nueva versión disponible", "fr": "Nouvelle version disponible", "de": "Neue Version verfügbar", "ru": "Доступна новая версия"],
     "updateNow":    ["en": "Update Now", "zh": "立即更新", "ja": "今すぐ更新", "ko": "지금 업데이트",
                      "es": "Actualizar ahora", "fr": "Mettre à jour", "de": "Jetzt aktualisieren", "ru": "Обновить"],
+    "updDownloading": ["en": "Downloading", "zh": "下载中", "ja": "ダウンロード中", "ko": "다운로드 중",
+                     "es": "Descargando", "fr": "Téléchargement", "de": "Wird geladen", "ru": "Загрузка"],
+    "updExtract":   ["en": "Extracting…", "zh": "解压中…", "ja": "展開中…", "ko": "압축 해제 중…",
+                     "es": "Extrayendo…", "fr": "Extraction…", "de": "Entpacken…", "ru": "Распаковка…"],
+    "updAuth":      ["en": "Waiting for authorization…", "zh": "等待授权…", "ja": "認証を待機中…", "ko": "승인 대기 중…",
+                     "es": "Esperando autorización…", "fr": "En attente d'autorisation…", "de": "Warte auf Autorisierung…", "ru": "Ожидание авторизации…"],
+    "updRestart":   ["en": "Update complete, restarting…", "zh": "更新完成，正在重启…", "ja": "更新完了、再起動中…", "ko": "업데이트 완료, 다시 시작 중…",
+                     "es": "Actualizado, reiniciando…", "fr": "Terminé, redémarrage…", "de": "Fertig, Neustart…", "ru": "Готово, перезапуск…"],
     "updFailed":    ["en": "Update failed — please download manually from GitHub Releases.", "zh": "更新失败，请到 GitHub Releases 手动下载。",
                      "ja": "更新に失敗しました。GitHub Releases から手動でダウンロードしてください。", "ko": "업데이트 실패 — GitHub Releases에서 수동으로 다운로드하세요.",
                      "es": "Error al actualizar: descargue manualmente desde GitHub Releases.", "fr": "Échec de la mise à jour — téléchargez manuellement depuis GitHub Releases.",
@@ -679,36 +687,106 @@ enum Updater {
         return false
     }
 
-    /// 下载最新包→管理员权限替换 App + 重装后台服务→重启
-    static func perform(_ fail: @escaping () -> Void) {
-        let tmp = NSTemporaryDirectory() + "fanctl-update"
-        DispatchQueue.global().async {
-            let dl = Process()
-            dl.executableURL = URL(fileURLWithPath: "/bin/bash")
-            dl.arguments = ["-c", "set -e; rm -rf '\(tmp)'; mkdir -p '\(tmp)'; curl -sL --max-time 180 -o '\(tmp)/Fanctl.zip' \(assetURL); ditto -x -k '\(tmp)/Fanctl.zip' '\(tmp)'"]
-            try? dl.run()
-            dl.waitUntilExit()
-            guard dl.terminationStatus == 0,
-                  FileManager.default.fileExists(atPath: tmp + "/Fanctl.app") else {
-                DispatchQueue.main.async { fail() }
+}
+
+// MARK: - 更新进度窗口（下载百分比 → 解压 → 授权 → 重启）
+
+final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
+    static var active: UpdateProgressController?      // 保活 + 防重入
+    private let window: NSWindow
+    private let bar = NSProgressIndicator(frame: NSRect(x: 20, y: 34, width: 280, height: 16))
+    private let label = NSTextField(labelWithString: "…")
+    private let onFail: () -> Void
+    private let tmp = NSTemporaryDirectory() + "fanctl-update"
+
+    init(onFail: @escaping () -> Void) {
+        self.onFail = onFail
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 92),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+        super.init()
+        window.title = "Fanctl"
+        window.level = .floating
+        window.isReleasedWhenClosed = false
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 92))
+        label.frame = NSRect(x: 20, y: 58, width: 280, height: 18)
+        label.font = .systemFont(ofSize: 12)
+        bar.minValue = 0
+        bar.maxValue = 100
+        bar.isIndeterminate = false
+        root.addSubview(label)
+        root.addSubview(bar)
+        window.contentView = root
+        window.center()
+    }
+
+    func start() {
+        guard UpdateProgressController.active == nil else { return }
+        UpdateProgressController.active = self
+        label.stringValue = T("updDownloading") + " 0%"
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try? FileManager.default.removeItem(atPath: tmp)
+        try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+        session.downloadTask(with: URL(string: Updater.assetURL)!).resume()
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite total: Int64) {
+        guard total > 0 else { return }
+        let pct = Double(totalBytesWritten) / Double(total) * 100
+        DispatchQueue.main.async {
+            self.bar.doubleValue = pct
+            self.label.stringValue = T("updDownloading") + String(format: " %.0f%%", pct)
+        }
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {
+        let zip = tmp + "/Fanctl.zip"
+        try? FileManager.default.moveItem(at: location, to: URL(fileURLWithPath: zip))
+        DispatchQueue.main.async {
+            self.bar.isIndeterminate = true
+            self.bar.startAnimation(nil)
+            self.label.stringValue = T("updExtract")
+        }
+        let un = Process()
+        un.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        un.arguments = ["-x", "-k", zip, tmp]
+        try? un.run()
+        un.waitUntilExit()
+        let ok = un.terminationStatus == 0 && FileManager.default.fileExists(atPath: tmp + "/Fanctl.app")
+        DispatchQueue.main.async {
+            guard ok else { self.finish(failed: true); return }
+            self.label.stringValue = T("updAuth")
+            let priv = "rm -rf /Applications/Fanctl.app && cp -R '\(self.tmp)/Fanctl.app' /Applications/ && /bin/bash '/Applications/Fanctl.app/Contents/Resources/install-helper.sh' '/Applications/Fanctl.app/Contents/Resources' && rm -rf '\(self.tmp)'"
+            let osa = "do shell script \"\(priv.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+            var err: NSDictionary?
+            NSAppleScript(source: osa)?.executeAndReturnError(&err)
+            if let err {
+                self.finish(failed: (err["NSAppleScriptErrorNumber"] as? Int) != -128)
                 return
             }
-            DispatchQueue.main.async {
-                let priv = "rm -rf /Applications/Fanctl.app && cp -R '\(tmp)/Fanctl.app' /Applications/ && /bin/bash '/Applications/Fanctl.app/Contents/Resources/install-helper.sh' '/Applications/Fanctl.app/Contents/Resources' && rm -rf '\(tmp)'"
-                let osa = "do shell script \"\(priv.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
-                var err: NSDictionary?
-                NSAppleScript(source: osa)?.executeAndReturnError(&err)
-                if let err {
-                    if (err["NSAppleScriptErrorNumber"] as? Int) != -128 { fail() }
-                    return
-                }
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/bin/sh")
-                p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
-                try? p.run()
-                NSApp.terminate(nil)
-            }
+            self.label.stringValue = T("updRestart")
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "sleep 1; open -n /Applications/Fanctl.app"]
+            try? p.run()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { NSApp.terminate(nil) }
         }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if error != nil {
+            DispatchQueue.main.async { self.finish(failed: true) }
+        }
+    }
+
+    private func finish(failed: Bool) {
+        window.orderOut(nil)
+        UpdateProgressController.active = nil
+        if failed { onFail() }
     }
 }
 
@@ -821,8 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
         menu.addItem(.separator())
-        let langItem = NSMenuItem(title: T("language"), action: nil, keyEquivalent: "")
-        langItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        let langItem = NSMenuItem(title: "🌐 " + T("language"), action: nil, keyEquivalent: "")
         let langMenu = NSMenu()
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
@@ -836,14 +913,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         langItem.submenu = langMenu
         menu.addItem(langItem)
-        let svcItem = makeItem(T("installSvc"), #selector(installService))
-        svcItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        let svcItem = makeItem("⚙️ " + T("installSvc"), #selector(installService))
         menu.addItem(svcItem)
-        let updItem = makeItem(T("checkUpdate"), #selector(menuCheckUpdate))
-        updItem.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        let updItem = makeItem("🔄 " + T("checkUpdate"), #selector(menuCheckUpdate))
         menu.addItem(updItem)
-        let fbItem = makeItem(T("feedback"), #selector(openFeedback))
-        fbItem.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        let fbItem = makeItem("✉️ " + T("feedback"), #selector(openFeedback))
         menu.addItem(fbItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("quit"), #selector(quit)))
@@ -901,7 +975,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 a.addButton(withTitle: T("updateNow"))
                 a.addButton(withTitle: T("laterBtn"))
                 if a.runModal() == .alertFirstButtonReturn {
-                    Updater.perform { self.simpleAlert(T("updFailed")) }
+                    UpdateProgressController(onFail: { self.simpleAlert(T("updFailed")) }).start()
                 }
             } else if interactive {
                 self.simpleAlert("\(T("upToDate"))（v\(appVersion)）")
