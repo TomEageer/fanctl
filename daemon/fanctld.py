@@ -29,6 +29,9 @@ SMCFAN  = "/usr/local/bin/smcfan"
 LOG     = "/var/log/fanctl.log"
 STATUS  = "/tmp/fanctl-status.json"
 CMD     = "/tmp/fanctl-cmd"
+HISTORY = "/tmp/fanctl-history.jsonl"
+HIST_KEEP = 2400          # 修剪后保留的样本数（约 2 小时 @3s）
+HIST_TRIM_AT = 4800       # 超过此行数触发修剪
 
 TARGET_TEMP  = 50.0
 ENGAGE_TEMP  = 48.0
@@ -93,6 +96,7 @@ def feedforward_rpm(watts):
 
 
 def write_status(mode):
+    append_history(mode)
     try:
         tmp = STATUS + ".tmp"
         with open(tmp, "w") as f:
@@ -103,6 +107,27 @@ def write_status(mode):
                        "ts": time.time()}, f)
         os.replace(tmp, STATUS)
         os.chmod(STATUS, 0o644)
+    except OSError:
+        pass
+
+
+def append_history(mode):
+    """按控制节拍追加历史样本；文件超限时修剪为最近 HIST_KEEP 条。"""
+    try:
+        with open(HISTORY, "a") as f:
+            f.write(json.dumps({"ts": round(time.time(), 1),
+                                "temp": round(state["temp"], 1),
+                                "rpm": int(state["rpm"] if state["manual"] else 0),
+                                "mode": mode}) + "\n")
+        os.chmod(HISTORY, 0o644)
+        state["hist_n"] = state.get("hist_n", 0) + 1
+        if state["hist_n"] >= 400:
+            state["hist_n"] = 0
+            with open(HISTORY) as f:
+                lines = f.readlines()
+            if len(lines) > HIST_TRIM_AT:
+                with open(HISTORY, "w") as f:
+                    f.writelines(lines[-HIST_KEEP:])
     except OSError:
         pass
 

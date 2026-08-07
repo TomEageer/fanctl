@@ -1,15 +1,134 @@
-// Fanctl menu bar app — minimal-cost status display + custom speed slider
-// Design rules (to stay cheap under Liquid Glass rendering):
-//   * timer refresh every 15s; the title only redraws when its text actually changed
-//   * opening the menu triggers an immediate refresh (menuWillOpen)
-//   * reads the daemon's status file — never touches SMC directly
-//   * dragging the slider switches the daemon into custom-speed mode
+// Fanctl menu bar app
+// Low-overhead by design: 15s timer refresh, title redraws only on change,
+// immediate refresh on menu open, all data read from daemon-written files.
 import AppKit
 
-let statusPath = "/tmp/fanctl-status.json"
-let cmdPath = "/tmp/fanctl-cmd"
+let statusPath  = "/tmp/fanctl-status.json"
+let historyPath = "/tmp/fanctl-history.jsonl"
+let cmdPath     = "/tmp/fanctl-cmd"
 let fanMin = 2317.0
 let fanMax = 7826.0
+let chartWindowSec = 1800.0   // 温度历史窗口：30 分钟
+
+struct Sample { let ts, temp: Double; let mode: String }
+
+func modeColor(_ mode: String) -> NSColor {
+    switch mode {
+    case "manual":  return .systemBlue     // 智能调速
+    case "custom":  return .systemOrange   // 手动定速
+    case "battery": return .systemGreen    // 电池供电
+    default:        return .systemGray     // 系统调度（待命/停用）
+    }
+}
+
+func modeName(_ mode: String, rpm: Double) -> String {
+    switch mode {
+    case "manual":  return "智能调速"
+    case "auto":    return "待命 · 系统调度"
+    case "custom":  return "手动定速 · \(Int(rpm)) RPM"
+    case "paused":  return "已停用 · 系统调度"
+    case "battery": return "电池供电 · 已停用"
+    default:        return mode
+    }
+}
+
+// MARK: - 温度历史曲线
+
+final class ChartView: NSView {
+    var samples: [Sample] = []
+
+    private let padL: CGFloat = 30, padR: CGFloat = 10, padT: CGFloat = 22, padB: CGFloat = 30
+
+    func reload() {
+        guard let raw = try? String(contentsOfFile: historyPath, encoding: .utf8) else {
+            samples = []; needsDisplay = true; return
+        }
+        let cutoff = Date().timeIntervalSince1970 - chartWindowSec
+        samples = raw.split(separator: "\n").suffix(1200).compactMap { line in
+            guard let d = line.data(using: .utf8),
+                  let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let ts = (o["ts"] as? NSNumber)?.doubleValue, ts >= cutoff,
+                  let t  = (o["temp"] as? NSNumber)?.doubleValue, t > 1 else { return nil }
+            return Sample(ts: ts, temp: t, mode: o["mode"] as? String ?? "auto")
+        }
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let plot = NSRect(x: padL, y: padB, width: bounds.width - padL - padR,
+                          height: bounds.height - padT - padB)
+        drawText("温度历史 · 30 分钟", at: NSPoint(x: padL, y: bounds.height - 16),
+                 size: 11, color: .labelColor, bold: true)
+        drawLegend()
+
+        guard samples.count >= 2 else {
+            drawText("正在采集数据…", at: NSPoint(x: padL, y: plot.midY),
+                     size: 10, color: .secondaryLabelColor)
+            return
+        }
+
+        let now = Date().timeIntervalSince1970
+        let t0 = now - chartWindowSec
+        var lo = floor((samples.map { $0.temp }.min()! - 3) / 5) * 5
+        var hi = ceil((samples.map { $0.temp }.max()! + 3) / 5) * 5
+        if hi - lo < 15 { hi = lo + 15 }
+        lo = max(lo, 20); hi = min(hi, 110)
+
+        func px(_ ts: Double) -> CGFloat { plot.minX + CGFloat((ts - t0) / (now - t0)) * plot.width }
+        func py(_ temp: Double) -> CGFloat { plot.minY + CGFloat((temp - lo) / (hi - lo)) * plot.height }
+
+        // 模式底色分段
+        var i = 0
+        while i < samples.count {
+            var j = i
+            while j + 1 < samples.count && samples[j + 1].mode == samples[i].mode { j += 1 }
+            let x1 = px(samples[i].ts), x2 = max(px(samples[j].ts), x1 + 1)
+            modeColor(samples[i].mode).withAlphaComponent(0.16).setFill()
+            NSRect(x: x1, y: plot.minY, width: x2 - x1, height: plot.height).fill()
+            i = j + 1
+        }
+
+        // 网格与刻度
+        NSColor.separatorColor.setStroke()
+        for temp in stride(from: lo, through: hi, by: 10) {
+            let path = NSBezierPath()
+            path.lineWidth = 0.5
+            path.move(to: NSPoint(x: plot.minX, y: py(temp)))
+            path.line(to: NSPoint(x: plot.maxX, y: py(temp)))
+            path.stroke()
+            drawText("\(Int(temp))", at: NSPoint(x: 4, y: py(temp) - 5), size: 9, color: .secondaryLabelColor)
+        }
+        drawText("-30 分钟", at: NSPoint(x: plot.minX, y: padB - 14), size: 9, color: .tertiaryLabelColor)
+        drawText("现在", at: NSPoint(x: plot.maxX - 22, y: padB - 14), size: 9, color: .tertiaryLabelColor)
+
+        // 温度曲线
+        let line = NSBezierPath()
+        line.lineWidth = 1.6
+        line.move(to: NSPoint(x: px(samples[0].ts), y: py(samples[0].temp)))
+        for s in samples.dropFirst() {
+            line.line(to: NSPoint(x: px(s.ts), y: py(s.temp)))
+        }
+        NSColor.labelColor.setStroke()
+        line.stroke()
+    }
+
+    private func drawLegend() {
+        var x: CGFloat = padL
+        for (mode, name) in [("manual", "智能调速"), ("custom", "手动定速"), ("auto", "系统调度")] {
+            modeColor(mode).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x, y: 7, width: 7, height: 7)).fill()
+            drawText(name, at: NSPoint(x: x + 10, y: 4), size: 9, color: .secondaryLabelColor)
+            x += 10 + CGFloat(name.count) * 10 + 14
+        }
+    }
+
+    private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
+        let font = bold ? NSFont.boldSystemFont(ofSize: size) : NSFont.systemFont(ofSize: size)
+        (s as NSString).draw(at: p, withAttributes: [.font: font, .foregroundColor: color])
+    }
+}
+
+// MARK: - 应用主体
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem!
@@ -17,14 +136,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastTitle = ""
     var dragging = false
 
-    let tempRow  = NSMenuItem(title: "温度: --", action: nil, keyEquivalent: "")
-    let powerRow = NSMenuItem(title: "功耗: --", action: nil, keyEquivalent: "")
-    let modeRow  = NSMenuItem(title: "模式: --", action: nil, keyEquivalent: "")
+    let tempRow  = NSMenuItem(title: "CPU 温度　--", action: nil, keyEquivalent: "")
+    let powerRow = NSMenuItem(title: "整机功耗　--", action: nil, keyEquivalent: "")
+    let modeRow  = NSMenuItem(title: "运行模式　--", action: nil, keyEquivalent: "")
     var smartItem: NSMenuItem!
     var pauseItem: NSMenuItem!
-    var maxItem: NSMenuItem!
+    var fullItem: NSMenuItem!
     var slider: NSSlider!
     var sliderLabel: NSTextField!
+    let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 300, height: 150))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -38,15 +158,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        // 转速拉条：实时显示，拖动即切自定义转速
+        let chartItem = NSMenuItem()
+        chartItem.view = chart
+        menu.addItem(chartItem)
+        menu.addItem(.separator())
+
         let sliderItem = NSMenuItem()
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 54))
-        sliderLabel = NSTextField(labelWithString: "风扇转速: --")
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 52))
+        sliderLabel = NSTextField(labelWithString: "目标转速")
         sliderLabel.font = .menuFont(ofSize: 13)
-        sliderLabel.frame = NSRect(x: 14, y: 32, width: 222, height: 18)
+        sliderLabel.frame = NSRect(x: 14, y: 30, width: 272, height: 18)
         slider = NSSlider(value: fanMin, minValue: fanMin, maxValue: fanMax,
                           target: self, action: #selector(sliderMoved(_:)))
-        slider.frame = NSRect(x: 14, y: 6, width: 222, height: 24)
+        slider.frame = NSRect(x: 14, y: 4, width: 272, height: 24)
         slider.isContinuous = true
         box.addSubview(sliderLabel)
         box.addSubview(slider)
@@ -54,22 +178,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(sliderItem)
         menu.addItem(.separator())
 
-        smartItem = makeItem("智能温控", #selector(cmdResume))
-        pauseItem = makeItem("暂停（交还系统）", #selector(cmdPause))
-        maxItem   = makeItem("风扇拉满", #selector(cmdMax))
+        smartItem = makeItem("智能调速", #selector(cmdResume))
+        fullItem  = makeItem("全速运行", #selector(cmdMax))
+        pauseItem = makeItem("停用（风扇交由系统调度）", #selector(cmdPause))
         menu.addItem(smartItem)
+        menu.addItem(fullItem)
         menu.addItem(pauseItem)
-        menu.addItem(maxItem)
         menu.addItem(.separator())
-        menu.addItem(makeItem("退出", #selector(quit)))
+        menu.addItem(makeItem("退出 Fanctl", #selector(quit)))
         item.menu = menu
 
         refresh()
         timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
-        RunLoop.main.add(timer!, forMode: .common)   // 菜单展开期间也照常刷新
+        RunLoop.main.add(timer!, forMode: .common)
     }
 
-    func menuWillOpen(_ menu: NSMenu) { refresh() } // 点开即最新，不等下个刷新周期
+    func menuWillOpen(_ menu: NSMenu) {
+        refresh()
+        chart.reload()
+    }
 
     func makeItem(_ title: String, _ sel: Selector) -> NSMenuItem {
         let m = NSMenuItem(title: title, action: sel, keyEquivalent: "")
@@ -82,8 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let obj = try? JSONSerialization.jsonObject(with: data),
               let j = obj as? [String: Any] else {
             setTitle("–°")
-            modeRow.title = "模式: 守护进程未运行"
-            sliderLabel.stringValue = "风扇转速: --"
+            modeRow.title = "运行模式　守护进程未运行"
             return
         }
         let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
@@ -94,32 +220,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let stale = Date().timeIntervalSince1970 - ts > 90
 
         setTitle(stale ? "–°" : String(format: "%.0f°", temp))
-        tempRow.title  = String(format: "温度: %.1f °C%@", temp, stale ? "（数据过期）" : "")
-        powerRow.title = String(format: "功耗: %.1f W", power)
-
-        let modeName: String
-        switch mode {
-        case "manual":  modeName = "智能温控中（\(Int(rpm)) rpm）"
-        case "auto":    modeName = "待命 · 系统自动（温度未超阈值）"
-        case "custom":  modeName = "自定义转速（\(Int(rpm)) rpm）"
-        case "paused":  modeName = "已暂停 · 系统自动"
-        case "battery": modeName = "电池供电 · 不介入"
-        default:        modeName = mode
-        }
-        modeRow.title = "模式: " + modeName
+        tempRow.title  = String(format: "CPU 温度　%.1f °C%@", temp, stale ? "（数据过期）" : "")
+        powerRow.title = String(format: "整机功耗　%.1f W", power)
+        modeRow.title  = "运行模式　" + modeName(mode, rpm: rpm)
 
         smartItem.state = (mode == "manual" || mode == "auto") ? .on : .off
         pauseItem.state = (mode == "paused") ? .on : .off
-        maxItem.state   = (mode == "custom" && rpm >= fanMax - 50) ? .on : .off
+        fullItem.state  = (mode == "custom" && rpm >= fanMax - 50) ? .on : .off
 
         if !dragging {
-            if rpm > 0 {
-                slider.doubleValue = rpm
-                sliderLabel.stringValue = "风扇转速: \(Int(rpm)) rpm（拖动切自定义）"
-            } else {
-                slider.doubleValue = fanMin
-                sliderLabel.stringValue = "风扇转速: 系统自动（拖动切自定义）"
-            }
+            slider.doubleValue = rpm > 0 ? rpm : fanMin
+            sliderLabel.stringValue = rpm > 0 ? "目标转速　\(Int(rpm)) RPM" : "目标转速　系统调度中"
             slider.isEnabled = (mode != "battery")
         }
     }
@@ -134,8 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func sliderMoved(_ s: NSSlider) {
         let rpm = Int(s.doubleValue)
         dragging = true
-        sliderLabel.stringValue = "自定义转速: \(rpm) rpm"
-        if NSApp.currentEvent?.type == .leftMouseUp {   // 松手才下发指令
+        sliderLabel.stringValue = "目标转速　\(rpm) RPM（手动定速）"
+        if NSApp.currentEvent?.type == .leftMouseUp {
             dragging = false
             writeCmd("set \(rpm)")
         }
@@ -143,7 +254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func writeCmd(_ verb: String) {
         try? verb.write(toFile: cmdPath, atomically: true, encoding: .utf8)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.refresh() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            self?.refresh()
+            self?.chart.reload()
+        }
     }
 
     @objc func cmdResume() { writeCmd("resume") }
