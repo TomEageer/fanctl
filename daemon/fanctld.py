@@ -77,6 +77,16 @@ def read_actual_rpm():
     return FAN_MIN
 
 
+def read_actual_raw():
+    """实际转速原始读数，读不到返回 0（用于状态展示与历史记录）。"""
+    r = smcfan("get", "F0Ac")
+    if r and r.returncode == 0:
+        m = re.search(r"value=([0-9.]+)", r.stdout)
+        if m:
+            return int(float(m.group(1)))
+    return 0
+
+
 def read_power_watts():
     try:
         out = subprocess.run(["ioreg", "-rn", "AppleSmartBattery"],
@@ -103,6 +113,7 @@ def write_status(mode):
             json.dump({"temp": round(state["temp"], 1),
                        "rpm": int(state["rpm"] if state["manual"] else 0),
                        "mode": mode,
+                       "act": state.get("act", 0),
                        "power": round(state["power"], 1),
                        "ts": time.time()}, f)
         os.replace(tmp, STATUS)
@@ -117,7 +128,7 @@ def append_history(mode):
         with open(HISTORY, "a") as f:
             f.write(json.dumps({"ts": round(time.time(), 1),
                                 "temp": round(state["temp"], 1),
-                                "rpm": int(state["rpm"] if state["manual"] else 0),
+                                "rpm": state.get("act", 0),
                                 "mode": mode}) + "\n")
         os.chmod(HISTORY, 0o644)
         state["hist_n"] = state.get("hist_n", 0) + 1
@@ -214,6 +225,7 @@ def control_tick(temp):
     state["temp"] = temp
     watts = read_power_watts()
     state["power"] = watts or 0.0
+    state["act"] = read_actual_raw()
 
     handle_command()
     if state["override"] == "pause":
