@@ -36,17 +36,18 @@ MODEL   = "/usr/local/var/fanctl/model.json"   # 自学习热模型（持久化�
 HIST_KEEP = 2400          # 修剪后保留的样本数（约 2 小时 @3s）
 HIST_TRIM_AT = 4800       # 超过此行数触发修剪
 
-TARGET_TEMP  = 50.0
-ENGAGE_TEMP  = 48.0
-RELEASE_TEMP = 43.0
+TARGET_TEMP  = 55.0   # 舒适档：允许温热平衡，安静优先（原 50 偏激进）
+ENGAGE_TEMP  = 53.0
+RELEASE_TEMP = 46.0
 FAN_MIN      = 2317.0
 FAN_MAX      = 7826.0
-KP           = 120.0
-KI           = 6.0
-RATE_UP_1    = 200.0   # 升速斜率：偏差 <5°C
-RATE_UP_2    = 400.0   # 升速斜率：偏差 5~15°C
-RATE_UP_3    = 700.0   # 升速斜率：偏差 >15°C（紧急态果断压制）
-RATE_DOWN    = 150.0   # 降速斜率：始终温柔
+KP           = 70.0   # 比例调柔：偏差的即时反应减半
+KI           = 6.0    # 积分不动：仍会缓慢把温度带回目标（"缓缓落温"靠它）
+KD_TREND     = 300.0  # 趋势阻尼：每拍温升 1°C 额外 +300 rpm，只阻上升不压绝对值
+RATE_UP_1    = 150.0   # 升速斜率：偏差 <5°C（舒适档整体放缓）
+RATE_UP_2    = 300.0   # 升速斜率：偏差 5~15°C
+RATE_UP_3    = 500.0   # 升速斜率：偏差 >15°C
+RATE_DOWN    = 120.0   # 降速斜率：始终温柔
 WRITE_BAND   = 75.0
 POWER_HOLD   = 60.0    # 功耗读数失效时沿用上一有效值的时长（秒）
 FF_GAIN_MIN  = 60.0    # 自学习前馈增益下限（RPM/W）
@@ -292,6 +293,12 @@ def control_tick(temp):
     err = temp - TARGET_TEMP
     state["integ"] = max(-1500.0, min(FAN_MAX - FAN_MIN, state["integ"] + KI * err))
 
+    # 趋势阻尼：只针对"温度正在上升"发力，升势一被摁住即退出（不参与压绝对温度）
+    d = temp - state.get("last_temp", temp)
+    state["last_temp"] = temp
+    state["trend"] = state.get("trend", 0.0) * 0.5 + d * 0.5
+    damp = KD_TREND * max(0.0, state["trend"])
+
     # 功耗突增预压制：功耗快线越过慢线的瞬间提前提转速，不等温度上来
     w = watts or 0.0
     if state["w_slow"] <= 0:
@@ -312,7 +319,7 @@ def control_tick(temp):
             state["model_dirty"] = True
     save_model()
 
-    cmd_raw = feedforward_rpm(watts) + spike + KP * err + state["integ"]
+    cmd_raw = feedforward_rpm(watts) + spike + damp + KP * err + state["integ"]
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
     if cmd_raw > FAN_MAX:
