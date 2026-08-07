@@ -15,7 +15,14 @@ let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionS
 var fanMin = 2000.0            // 由守护进程按机型探测后回填
 var fanMax = 7826.0
 var rpmAxisMax = 8000.0
-var ffGain = 110.0             // 由守护进程回填：每瓦发热需要多少转速（本机学习值）
+var ffGain = 110.0             // 由守护进程回填：每瓦发热需要多少转速（回退用）
+// 本机热模型（守护进程在线辨识）：散热功率 = (k0 + k1·rpm/1000) × (温度 − 环境温度)
+struct ThermalModel { var k0: Double; var k1: Double; var tamb: Double; var n: Int }
+var thermal: ThermalModel? = nil
+func dissipation(rpm: Double, temp: Double) -> Double? {
+    guard let m = thermal else { return nil }
+    return max(0, (m.k0 + m.k1 * rpm / 1000) * (temp - m.tamb))
+}
 
 // MARK: - 本地化
 
@@ -94,9 +101,10 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
-    "powerLegend":  ["en": "Heat (as RPM needed)", "zh": "产热（折合所需转速）", "ja": "発熱（必要回転数換算）",
-                     "ko": "발열(필요 회전수 환산)", "es": "Calor (RPM necesarias)", "fr": "Chaleur (RPM requis)",
-                     "de": "Wärme (nötige Drehzahl)", "ru": "Тепло (нужные обороты)"],
+    "heatIn":       ["en": "Heat produced", "zh": "产热量", "ja": "発熱量", "ko": "발열량",
+                     "es": "Calor generado", "fr": "Chaleur produite", "de": "Wärmeerzeugung", "ru": "Тепловыделение"],
+    "heatOut":      ["en": "Heat removed", "zh": "散热量", "ja": "放熱量", "ko": "방열량",
+                     "es": "Calor disipado", "fr": "Chaleur évacuée", "de": "Wärmeabfuhr", "ru": "Теплоотвод"],
     "noData":       ["en": "—", "zh": "—", "ja": "—", "ko": "—", "es": "—", "fr": "—", "de": "—", "ru": "—"],
     "uninstall":    ["en": "Uninstall Fanctl…", "zh": "卸载 Fanctl…", "ja": "Fanctl をアンインストール…", "ko": "Fanctl 제거…",
                      "es": "Desinstalar Fanctl…", "fr": "Désinstaller Fanctl…", "de": "Fanctl deinstallieren…", "ru": "Удалить Fanctl…"],
@@ -299,8 +307,13 @@ final class ChartView: NSView {
         func px(_ ts: Double) -> CGFloat { plot.minX + CGFloat((ts - t0) / (now - t0)) * plot.width }
         func pyT(_ v: Double) -> CGFloat { plot.minY + CGFloat((v - lo) / (hi - lo)) * plot.height }
         func pyR(_ v: Double) -> CGFloat { plot.minY + CGFloat(v / rpmAxisMax) * plot.height }
-        // 功耗折合成"守住目标温度所需转速"（按本机学习到的前馈增益标定）：
-        // 紫线高于青线 = 当前转速压不住这些热量，温度会涨；青线在上 = 温度会回落
+        // 瓦特轴：模型就绪后产热/散热同轴直接比较（散热>产热即降温）
+        let wMax: Double = {
+            guard thermal != nil else { return 60 }
+            let peak = samples.map { max($0.w, dissipation(rpm: $0.rpm, temp: $0.temp) ?? 0) }.max() ?? 60
+            return max(20, (peak / 10).rounded(.up) * 10)
+        }()
+        func pyWatt(_ v: Double) -> CGFloat { plot.minY + CGFloat(min(v, wMax) / wMax) * plot.height }
         func pyW(_ v: Double) -> CGFloat { pyR(min(fanMin + max(0, v - 8) * ffGain, rpmAxisMax)) }
 
         func bandColor(_ s: Sample) -> NSColor {
@@ -332,30 +345,43 @@ final class ChartView: NSView {
             g.stroke()
             drawText("\(Int(temp))°", at: NSPoint(x: 12, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
         }
-        for rpm in [0.0, 4000.0, 8000.0] {
-            drawText(rpm == 0 ? "0" : String(format: "%.0fk", rpm / 1000),
-                     at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
-                     color: NSColor.systemTeal.withAlphaComponent(0.9))
-            // 同一高度对应的功耗（按本机热模型折算）
-            let w = (rpm - fanMin) / max(ffGain, 1) + 8
-            if w > 8 {
-                drawText(String(format: "%.0fW", w),
-                         at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 14), size: 8,
-                         color: NSColor.systemPurple.withAlphaComponent(0.85))
+        if thermal != nil {
+            for f in [0.0, 0.5, 1.0] {
+                drawText(String(format: "%.0fW", wMax * f),
+                         at: NSPoint(x: plot.maxX + 5, y: pyWatt(wMax * f) - 5), size: 9,
+                         color: NSColor.systemTeal.withAlphaComponent(0.9))
+            }
+        } else {
+            for rpm in [0.0, 4000.0, 8000.0] {
+                drawText(rpm == 0 ? "0" : String(format: "%.0fk", rpm / 1000),
+                         at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
+                         color: NSColor.systemTeal.withAlphaComponent(0.9))
             }
         }
         drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 12), size: 9, color: .tertiaryLabelColor)
         drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 12), size: 9, color: .tertiaryLabelColor)
 
         NSBezierPath(rect: plot).setClip()          // 曲线不越界画到图例/标题上
-        if samples.contains(where: { $0.w > 0 }) {
+        if thermal != nil {
+            // 产热（紫虚线）与散热（青实线）同为瓦特：青线在上 = 正在降温
             NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
-            let wp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyW($0.w)) }, lineWidth: 1.0)
-            wp.setLineDash([4, 3], count: 2, phase: 0)
-            wp.stroke()
+            let hp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyWatt($0.w)) }, lineWidth: 1.0)
+            hp.setLineDash([4, 3], count: 2, phase: 0)
+            hp.stroke()
+            NSColor.systemTeal.setStroke()
+            splinePath(samples.map {
+                NSPoint(x: px($0.ts), y: pyWatt(dissipation(rpm: $0.rpm, temp: $0.temp) ?? 0))
+            }, lineWidth: 1.2).stroke()
+        } else {
+            if samples.contains(where: { $0.w > 0 }) {
+                NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
+                let wp = splinePath(samples.map { NSPoint(x: px($0.ts), y: pyW($0.w)) }, lineWidth: 1.0)
+                wp.setLineDash([4, 3], count: 2, phase: 0)
+                wp.stroke()
+            }
+            NSColor.systemTeal.setStroke()
+            splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
         }
-        NSColor.systemTeal.setStroke()
-        splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
 
         NSColor.labelColor.setStroke()
         splinePath(samples.map { NSPoint(x: px($0.ts), y: pyT($0.temp)) }, lineWidth: 1.6).stroke()
@@ -417,13 +443,14 @@ final class ChartView: NSView {
         NSColor.systemTeal.setStroke()
         let seg = NSBezierPath(); seg.lineWidth = 2
         seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
-        drawText(T("rpm"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
-        x += 15 + T("rpm").size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
+        let tealName = thermal != nil ? T("heatOut") : T("rpm")
+        drawText(tealName, at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        x += 15 + tealName.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 10
         NSColor.systemPurple.withAlphaComponent(0.85).setStroke()
         let seg2 = NSBezierPath(); seg2.lineWidth = 2
         seg2.setLineDash([4, 3], count: 2, phase: 0)
         seg2.move(to: NSPoint(x: x, y: 10)); seg2.line(to: NSPoint(x: x + 12, y: 10)); seg2.stroke()
-        drawText(T("powerLegend"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        drawText(thermal != nil ? T("heatIn") : T("sysPower"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -1218,6 +1245,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mode  = j["mode"] as? String ?? "?"
         let stale = Date().timeIntervalSince1970 - ts > 90 || tempOpt == nil
         if let g = (j["ffGain"] as? NSNumber)?.doubleValue, g > 1 { ffGain = g }
+        if let tm = j["thermal"] as? [String: Any],
+           let k0 = (tm["k0"] as? NSNumber)?.doubleValue,
+           let k1 = (tm["k1"] as? NSNumber)?.doubleValue,
+           let ta = (tm["tamb"] as? NSNumber)?.doubleValue {
+            thermal = ThermalModel(k0: k0, k1: k1, tamb: ta, n: (tm["n"] as? NSNumber)?.intValue ?? 0)
+        } else if j["thermal"] is NSNull { thermal = nil }
         if let mn = (j["fanMin"] as? NSNumber)?.doubleValue,
            let mx = (j["fanMax"] as? NSNumber)?.doubleValue, mx > mn {
             fanMin = mn; fanMax = mx; rpmAxisMax = (mx / 1000).rounded(.up) * 1000

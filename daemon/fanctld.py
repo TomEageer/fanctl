@@ -77,7 +77,7 @@ state = {
     "w_slow": 0.0, "w_ff": 0.0, "temps": [], "trend": 0.0, "last_temp": None,
     "profile": "balanced", "gains": {}, "model_dirty": False, "model_saved": 0.0,
     "fan_min": FAN_MIN_DEFAULT, "fan_max": FAN_MAX_DEFAULT, "fans": 0,
-    "ticks": 0, "hist_n": 0, "watts_good": None,
+    "ticks": 0, "hist_n": 0, "watts_good": None, "tm": None,
 }
 macmon_proc = None
 
@@ -222,6 +222,93 @@ def on_ac_power():
         return True                      # 判定失败按插电处理，宁多转不少转
 
 
+# ---------------------------------------------------------------- 热模型辨识
+#
+# 物理模型（稳态能量守恒）：产热 W = h(rpm) · (T_die − T_amb)
+#   其中 h(rpm) = k0 + k1·(rpm/1000)  单位 W/°C，是本机固有的散热能力曲线
+# 展开成线性回归：W = k0·T + k1·(r·T) − k0·T_amb − k1·T_amb·r
+#   取特征 x = [T, r·T, 1, r]，系数 θ = [A, B, C, D]
+#   则 k0 = A, k1 = B, T_amb = −C/A（与 −D/B 互为一致性校验）
+# 用充分统计量 (XᵀX, Xᵀy) 在线累积并带遗忘因子，随环境变化自适应。
+
+TM_DECAY = 0.999          # 每次新样本对历史统计量的遗忘因子
+TM_REFIT_EVERY = 30       # 每积累 N 个稳态样本重新拟合一次
+TM_MIN_SAMPLES = 60       # 少于此样本数不采信拟合结果
+TM_RIDGE = 1e-6           # 岭正则，防止近奇异
+
+
+def tm_init():
+    return {"S": [[0.0] * 4 for _ in range(4)], "b": [0.0] * 4, "n": 0.0,
+            "since_fit": 0, "k0": None, "k1": None, "tamb": None, "rms": None}
+
+
+def tm_add(temp, rpm, watts):
+    """收一个稳态样本进充分统计量。"""
+    tm = state["tm"]
+    x = [temp, (rpm / 1000.0) * temp, 1.0, rpm / 1000.0]
+    for i in range(4):
+        for j in range(4):
+            tm["S"][i][j] = tm["S"][i][j] * TM_DECAY + x[i] * x[j]
+        tm["b"][i] = tm["b"][i] * TM_DECAY + x[i] * watts
+    tm["n"] = tm["n"] * TM_DECAY + 1.0
+    tm["since_fit"] += 1
+
+
+def solve4(S, b):
+    """4×4 高斯消元（带部分主元），失败返回 None。"""
+    m = [[S[i][j] + (TM_RIDGE if i == j else 0.0) for j in range(4)] + [b[i]] for i in range(4)]
+    for c in range(4):
+        p = max(range(c, 4), key=lambda r: abs(m[r][c]))
+        if abs(m[p][c]) < 1e-12:
+            return None
+        m[c], m[p] = m[p], m[c]
+        for r in range(4):
+            if r == c:
+                continue
+            f = m[r][c] / m[c][c]
+            for k in range(c, 5):
+                m[r][k] -= f * m[c][k]
+    return [m[i][4] / m[i][i] for i in range(4)]
+
+
+def tm_fit():
+    """重新拟合并做物理合理性校验，不合理则保留旧模型。"""
+    tm = state["tm"]
+    if tm["n"] < TM_MIN_SAMPLES:
+        return
+    th = solve4(tm["S"], tm["b"])
+    if not th:
+        return
+    A, B, C, _D = th
+    if A <= 0 or B <= 0:                       # h 必须随转速单调增且为正
+        return
+    tamb = -C / A
+    if not (5.0 <= tamb <= 45.0):              # 环境温度必须在物理可信区间
+        return
+    state["tm"].update(k0=A, k1=B, tamb=tamb)
+    log("thermal model: h(rpm)=%.3f+%.3f·(rpm/1000) W/°C, T_amb=%.1f°C, n=%.0f"
+        % (A, B, tamb, tm["n"]))
+
+
+def tm_dissipation(temp, rpm):
+    """当前转速与温度下的散热功率（W）。模型未就绪返回 None。"""
+    tm = state["tm"]
+    if tm["k0"] is None:
+        return None
+    h = tm["k0"] + tm["k1"] * (rpm / 1000.0)
+    return max(0.0, h * (temp - tm["tamb"]))
+
+
+def tm_required_rpm(watts, target):
+    """守住目标温度所需的转速（W = h·ΔT 反解）。模型未就绪返回 None。"""
+    tm = state["tm"]
+    if tm["k0"] is None or tm["k1"] <= 0:
+        return None
+    dt = max(target - tm["tamb"], 5.0)
+    h_need = watts / dt
+    return max(0.0, (h_need - tm["k0"]) / tm["k1"] * 1000.0)
+
+
 # ---------------------------------------------------------------- 模型持久化
 
 def prof():
@@ -233,11 +320,20 @@ def ff_gain():
 
 
 def load_model():
+    if state["tm"] is None:
+        state["tm"] = tm_init()
     try:
         with open(MODEL) as f:
             m = json.load(f)
     except (OSError, ValueError):
         return
+    tmj = m.get("thermal")
+    if isinstance(tmj, dict) and tmj.get("S"):
+        try:
+            state["tm"].update(S=tmj["S"], b=tmj["b"], n=float(tmj["n"]))
+            tm_fit()
+        except (KeyError, TypeError, ValueError):
+            pass
     gains = m.get("gains")
     if isinstance(gains, dict):          # 每档独立增益（目标温度不同，不可共用）
         for k, v in gains.items():
@@ -259,7 +355,8 @@ def save_model(force=False):
         os.makedirs(RUNDIR, exist_ok=True)
         write_file_safe(MODEL, json.dumps({
             "gains": {k: round(v, 2) for k, v in state["gains"].items()},
-            "profile": state["profile"], "updated": now}))
+            "profile": state["profile"], "updated": now,
+            "thermal": {"S": state["tm"]["S"], "b": state["tm"]["b"], "n": state["tm"]["n"]}}))
         state["model_dirty"] = False
         state["model_saved"] = now
     except OSError:
@@ -284,6 +381,12 @@ def write_status(mode):
             # UI 用它把功耗折合成"守住当前目标温度所需的转速"，两线才可直接比较
             "ffGain": round(ff_gain() * prof()["ff_scale"], 1),
             "target": prof()["target"],
+            "thermal": ({"k0": round(state["tm"]["k0"], 4),
+                         "k1": round(state["tm"]["k1"], 4),
+                         "tamb": round(state["tm"]["tamb"], 1),
+                         "n": int(state["tm"]["n"])}
+                        if state["tm"]["k0"] is not None else None),
+            "diss": (round(d, 1) if (d := tm_dissipation(state["temp"], state["act"])) else None),
             "ts": time.time(),
         }
         write_file_safe(STATUS + ".tmp", json.dumps(payload))
@@ -433,6 +536,11 @@ def control_tick(temp):
     state["temps"] = (state["temps"] + [temp])[-8:]
     if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
             and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10):
+        tm_add(temp, state["act"] or state["rpm"], state["w_ff"])
+        if state["tm"]["since_fit"] >= TM_REFIT_EVERY:
+            state["tm"]["since_fit"] = 0
+            tm_fit()
+            state["model_dirty"] = True
         base = max(state["w_ff"] - 8.0, 2.0)
         old = ff_gain()
         new = max(FF_GAIN_MIN, min(FF_GAIN_MAX, old + LEARN_RATE * state["integ"] / base))
@@ -526,6 +634,7 @@ def preflight():
 def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
+    state["tm"] = tm_init()
     load_model()
     if not preflight():
         time.sleep(60)                   # 让 launchd 的 KeepAlive 慢速重试而非狂刷
