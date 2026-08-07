@@ -1,13 +1,15 @@
 // Fanctl menu bar app
 // Low-overhead by design:
 //   * menu closed  -> 15s slow refresh, title redraws only on text change
-//   * menu open    -> 2s live refresh (status/slider), chart reloads every 6s
+//   * menu open    -> 2s live refresh, chart reloads every 6s
 //   * all data read from daemon-written files; never touches SMC directly
+// First launch: offers to install the privileged background service bundled in Resources.
 import AppKit
 
 let statusPath  = "/tmp/fanctl-status.json"
 let historyPath = "/tmp/fanctl-history.jsonl"
 let cmdPath     = "/tmp/fanctl-cmd"
+let daemonPlist = "/Library/LaunchDaemons/io.fanctl.daemon.plist"
 let fanMin = 2317.0
 let fanMax = 7826.0
 let rpmAxisMax = 8000.0
@@ -106,7 +108,6 @@ final class ChartView: NSView {
         func pyT(_ v: Double) -> CGFloat { plot.minY + CGFloat((v - lo) / (hi - lo)) * plot.height }
         func pyR(_ v: Double) -> CGFloat { plot.minY + CGFloat(v / rpmAxisMax) * plot.height }
 
-        // 模式底色分段
         var i = 0
         while i < samples.count {
             var j = i
@@ -117,7 +118,6 @@ final class ChartView: NSView {
             i = j + 1
         }
 
-        // 网格 + 左轴（温度）+ 右轴（转速）
         NSColor.separatorColor.setStroke()
         for temp in stride(from: lo, through: hi, by: 10) {
             let g = NSBezierPath(); g.lineWidth = 0.5
@@ -134,14 +134,12 @@ final class ChartView: NSView {
         drawText(timeLabel(), at: NSPoint(x: plot.minX, y: padB - 14), size: 9, color: .tertiaryLabelColor)
         drawText("现在", at: NSPoint(x: plot.maxX - 22, y: padB - 14), size: 9, color: .tertiaryLabelColor)
 
-        // 转速曲线（右轴，青色细线）
         let rline = NSBezierPath(); rline.lineWidth = 1.0
         rline.move(to: NSPoint(x: px(samples[0].ts), y: pyR(samples[0].rpm)))
         for s in samples.dropFirst() { rline.line(to: NSPoint(x: px(s.ts), y: pyR(s.rpm))) }
         NSColor.systemTeal.setStroke()
         rline.stroke()
 
-        // 温度曲线（左轴，主色粗线）
         let tline = NSBezierPath(); tline.lineWidth = 1.6
         tline.move(to: NSPoint(x: px(samples[0].ts), y: pyT(samples[0].temp)))
         for s in samples.dropFirst() { tline.line(to: NSPoint(x: px(s.ts), y: pyT(s.temp))) }
@@ -178,6 +176,80 @@ final class ChartView: NSView {
     }
 }
 
+// MARK: - 转速控件：实心点=实时转速，空心环=手动定速目标，实时点向目标滑动
+
+final class SpeedControlView: NSView {
+    var actual: Double = fanMin
+    var setpoint: Double?             // 手动定速目标；nil = 非手动模式
+    var isEnabled = true
+    var dragging = false
+    var onPick: ((Int) -> Void)?      // 松开时回调
+    var onDrag: ((Int) -> Void)?      // 拖动过程回调（更新标签）
+
+    private let inset: CGFloat = 16
+
+    private func xFor(_ rpm: Double) -> CGFloat {
+        inset + CGFloat((min(max(rpm, fanMin), fanMax) - fanMin) / (fanMax - fanMin)) * (bounds.width - inset * 2)
+    }
+    private func rpmFor(_ x: CGFloat) -> Double {
+        let f = Double((x - inset) / (bounds.width - inset * 2))
+        return fanMin + min(max(f, 0), 1) * (fanMax - fanMin)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let midY = bounds.midY
+        // 轨道
+        let track = NSBezierPath()
+        track.lineWidth = 3
+        track.lineCapStyle = .round
+        track.move(to: NSPoint(x: inset, y: midY))
+        track.line(to: NSPoint(x: bounds.width - inset, y: midY))
+        (isEnabled ? NSColor.separatorColor : NSColor.separatorColor.withAlphaComponent(0.4)).setStroke()
+        track.stroke()
+
+        // 已达区段（轨道左端到实时点，青色）
+        let reach = NSBezierPath()
+        reach.lineWidth = 3
+        reach.lineCapStyle = .round
+        reach.move(to: NSPoint(x: inset, y: midY))
+        reach.line(to: NSPoint(x: xFor(actual), y: midY))
+        NSColor.systemTeal.withAlphaComponent(isEnabled ? 0.8 : 0.3).setStroke()
+        reach.stroke()
+
+        // 目标环（手动定速，橙色空心圆）
+        if let sp = setpoint {
+            let x = xFor(sp)
+            let ring = NSBezierPath(ovalIn: NSRect(x: x - 7, y: midY - 7, width: 14, height: 14))
+            ring.lineWidth = 2
+            NSColor.systemOrange.setStroke()
+            ring.stroke()
+        }
+
+        // 实时点（青色实心圆）
+        let ax = xFor(actual)
+        NSColor.systemTeal.setFill()
+        NSBezierPath(ovalIn: NSRect(x: ax - 5, y: midY - 5, width: 10, height: 10)).fill()
+    }
+
+    override func mouseDown(with event: NSEvent) { handle(event, final: false) }
+    override func mouseDragged(with event: NSEvent) { handle(event, final: false) }
+    override func mouseUp(with event: NSEvent) { handle(event, final: true) }
+
+    private func handle(_ event: NSEvent, final: Bool) {
+        guard isEnabled else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        let rpm = rpmFor(p.x)
+        dragging = !final
+        setpoint = rpm
+        needsDisplay = true
+        if final {
+            onPick?(Int(rpm))
+        } else {
+            onDrag?(Int(rpm))
+        }
+    }
+}
+
 // MARK: - 应用主体
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -186,7 +258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var fastTimer: Timer?
     var fastTicks = 0
     var lastTitle = ""
-    var dragging = false
 
     let tempRow  = NSMenuItem(title: "CPU 温度　--", action: nil, keyEquivalent: "")
     let powerRow = NSMenuItem(title: "整机功耗　--", action: nil, keyEquivalent: "")
@@ -194,8 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var smartItem: NSMenuItem!
     var pauseItem: NSMenuItem!
     var fullItem: NSMenuItem!
-    var slider: NSSlider!
-    var sliderLabel: NSTextField!
+    var speedLabel: NSTextField!
+    let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 4, width: 292, height: 24))
     let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 168))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -215,37 +286,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(chartItem)
         menu.addItem(.separator())
 
-        let sliderItem = NSMenuItem()
+        let speedItem = NSMenuItem()
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 52))
-        sliderLabel = NSTextField(labelWithString: "转速")
-        sliderLabel.font = .menuFont(ofSize: 13)
-        sliderLabel.frame = NSRect(x: 14, y: 30, width: 292, height: 18)
-        slider = NSSlider(value: fanMin, minValue: fanMin, maxValue: fanMax,
-                          target: self, action: #selector(sliderMoved(_:)))
-        slider.frame = NSRect(x: 14, y: 4, width: 292, height: 24)
-        slider.isContinuous = true
-        box.addSubview(sliderLabel)
-        box.addSubview(slider)
-        sliderItem.view = box
-        menu.addItem(sliderItem)
+        speedLabel = NSTextField(labelWithString: "转速　--")
+        speedLabel.font = .menuFont(ofSize: 13)
+        speedLabel.frame = NSRect(x: 14, y: 30, width: 292, height: 18)
+        speedControl.onDrag = { [weak self] rpm in
+            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM（松开生效）"
+        }
+        speedControl.onPick = { [weak self] rpm in
+            self?.writeCmd("set \(rpm)")
+            self?.speedLabel.stringValue = "手动定速　\(rpm) RPM"
+        }
+        box.addSubview(speedLabel)
+        box.addSubview(speedControl)
+        speedItem.view = box
+        menu.addItem(speedItem)
         menu.addItem(.separator())
 
         smartItem = makeItem("智能调速", #selector(cmdResume))
-        fullItem  = makeItem("全速运行", #selector(cmdMax))
-        pauseItem = makeItem("系统调度", #selector(cmdPause))
+        fullItem  = makeItem("最大转速", #selector(cmdMax))
+        pauseItem = makeItem("恢复系统调度", #selector(cmdPause))
         menu.addItem(smartItem)
         menu.addItem(fullItem)
         menu.addItem(pauseItem)
         menu.addItem(.separator())
+        menu.addItem(makeItem("安装 / 更新后台服务…", #selector(installService)))
         menu.addItem(makeItem("退出 Fanctl", #selector(quit)))
         item.menu = menu
 
         refresh()
         slowTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(slowTimer!, forMode: .common)
+
+        if !FileManager.default.fileExists(atPath: daemonPlist) {
+            promptInstall(firstRun: true)
+        }
     }
 
-    // 菜单展开 -> 2s 实时刷新；收起 -> 回到 15s 慢刷
+    // MARK: 后台服务安装（内嵌于 App，首启一次授权）
+
+    func promptInstall(firstRun: Bool) {
+        let alert = NSAlert()
+        alert.messageText = firstRun ? "安装 Fanctl 后台服务" : "更新 Fanctl 后台服务"
+        alert.informativeText = "风扇控制需要一个以管理员权限运行的后台服务（安装一次，开机自启）。安装内容：smcfan、fanctld 及其启动项。"
+        alert.addButton(withTitle: firstRun ? "安装" : "更新")
+        alert.addButton(withTitle: "暂不")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let res = Bundle.main.resourcePath else { return }
+        let cmd = "/bin/bash '\(res)/install-helper.sh' '\(res)'"
+        let script = "do shell script \"\(cmd.replacingOccurrences(of: "\"", with: "\\\""))\" with administrator privileges"
+        var err: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&err)
+        if err != nil {
+            let fail = NSAlert()
+            fail.messageText = "安装未完成"
+            fail.informativeText = "已取消或安装出错。可稍后从菜单「安装 / 更新后台服务…」重试。"
+            fail.runModal()
+        }
+    }
+
+    @objc func installService() { promptInstall(firstRun: !FileManager.default.fileExists(atPath: daemonPlist)) }
+
+    // MARK: 刷新
+
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
         chart.reload()
@@ -275,7 +379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let obj = try? JSONSerialization.jsonObject(with: data),
               let j = obj as? [String: Any] else {
             setTitle("–°")
-            modeRow.title = "运行模式　守护进程未运行"
+            modeRow.title = "运行模式　后台服务未运行"
             return
         }
         let temp  = (j["temp"]  as? NSNumber)?.doubleValue ?? 0
@@ -295,13 +399,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pauseItem.state = (mode == "paused") ? .on : .off
         fullItem.state  = (mode == "custom" && rpm >= fanMax - 50) ? .on : .off
 
-        if !dragging {
-            let shown = act > 0 ? act : fanMin
-            slider.doubleValue = min(max(shown, fanMin), fanMax)
-            sliderLabel.stringValue = act > 0
-                ? "转速　\(Int(act)) RPM"
-                : "转速　--"
-            slider.isEnabled = (mode != "battery")
+        if !speedControl.dragging {
+            speedControl.actual = act > 0 ? act : fanMin
+            speedControl.setpoint = (mode == "custom") ? rpm : nil
+            speedControl.isEnabled = (mode != "battery")
+            speedControl.needsDisplay = true
+            if mode == "custom", abs(act - rpm) > 150 {
+                speedLabel.stringValue = "转速　\(Int(act)) → \(Int(rpm)) RPM"
+            } else {
+                speedLabel.stringValue = act > 0 ? "转速　\(Int(act)) RPM" : "转速　--"
+            }
         }
     }
 
@@ -309,16 +416,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if t != lastTitle {
             item.button?.title = t
             lastTitle = t
-        }
-    }
-
-    @objc func sliderMoved(_ s: NSSlider) {
-        let rpm = Int(s.doubleValue)
-        dragging = true
-        sliderLabel.stringValue = "手动定速　\(rpm) RPM（松开生效）"
-        if NSApp.currentEvent?.type == .leftMouseUp {
-            dragging = false
-            writeCmd("set \(rpm)")
         }
     }
 

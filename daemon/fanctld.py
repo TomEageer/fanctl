@@ -24,7 +24,9 @@ import subprocess
 import sys
 import time
 
-MACMON  = "/opt/homebrew/bin/macmon"
+MACMON = next((p for p in ("/opt/homebrew/bin/macmon",
+                            "/usr/local/bin/fanctl-macmon") if os.path.exists(p)),
+              "/opt/homebrew/bin/macmon")
 SMCFAN  = "/usr/local/bin/smcfan"
 LOG     = "/var/log/fanctl.log"
 STATUS  = "/tmp/fanctl-status.json"
