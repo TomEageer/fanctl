@@ -156,7 +156,7 @@ final class ChartView: NSView {
     let windowOptions: [(String, Double)] = [(T("win10"), 600), (T("win30"), 1800), (T("win1h"), 3600), (T("win2h"), 7200)]
     var segmented: NSSegmentedControl!
 
-    private let padL: CGFloat = 30, padR: CGFloat = 34, padT: CGFloat = 26, padB: CGFloat = 30
+    private let padL: CGFloat = 30, padR: CGFloat = 34, padT: CGFloat = 26, padB: CGFloat = 36
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -255,8 +255,8 @@ final class ChartView: NSView {
                      at: NSPoint(x: plot.maxX + 5, y: pyR(rpm) - 5), size: 9,
                      color: NSColor.systemTeal.withAlphaComponent(0.9))
         }
-        drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 14), size: 9, color: .tertiaryLabelColor)
-        drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 14), size: 9, color: .tertiaryLabelColor)
+        drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 13), size: 9, color: .tertiaryLabelColor)
+        drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 13), size: 9, color: .tertiaryLabelColor)
 
         let rline = NSBezierPath(); rline.lineWidth = 1.0
         rline.move(to: NSPoint(x: px(samples[0].ts), y: pyR(samples[0].rpm)))
@@ -275,14 +275,14 @@ final class ChartView: NSView {
         var x: CGFloat = padL
         for (mode, name) in [("manual", T("smart")), ("custom", T("manual")), ("auto", T("systemSched"))] {
             modeColor(mode).setFill()
-            NSBezierPath(ovalIn: NSRect(x: x, y: 7, width: 7, height: 7)).fill()
-            drawText(name, at: NSPoint(x: x + 10, y: 4), size: 9, color: .secondaryLabelColor)
+            NSBezierPath(ovalIn: NSRect(x: x, y: 8, width: 7, height: 7)).fill()
+            drawText(name, at: NSPoint(x: x + 10, y: 5), size: 9, color: .secondaryLabelColor)
             x += 10 + name.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9)]).width + 12
         }
         NSColor.systemTeal.setStroke()
         let seg = NSBezierPath(); seg.lineWidth = 2
-        seg.move(to: NSPoint(x: x, y: 10)); seg.line(to: NSPoint(x: x + 12, y: 10)); seg.stroke()
-        drawText(T("rpm"), at: NSPoint(x: x + 15, y: 4), size: 9, color: .secondaryLabelColor)
+        seg.move(to: NSPoint(x: x, y: 11)); seg.line(to: NSPoint(x: x + 12, y: 11)); seg.stroke()
+        drawText(T("rpm"), at: NSPoint(x: x + 15, y: 5), size: 9, color: .secondaryLabelColor)
     }
 
     private func drawText(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor, bold: Bool = false) {
@@ -595,8 +595,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var pauseItem: NSMenuItem!
     var fullItem: NSMenuItem!
     var speedLabel: NSTextField!
-    let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 4, width: 292, height: 24))
-    let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 168))
+    let speedControl = SpeedControlView(frame: NSRect(x: 14, y: 2, width: 292, height: 24))
+    let chart = ChartView(frame: NSRect(x: 0, y: 0, width: 320, height: 176))
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 单实例守卫：已有同 bundle id 实例在跑则直接退出（防手动启动/LaunchAgent 双开）
@@ -624,10 +624,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         let speedItem = NSMenuItem()
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 52))
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 48))
         speedLabel = NSTextField(labelWithString: T("rpm"))
         speedLabel.font = .menuFont(ofSize: 13)
-        speedLabel.frame = NSRect(x: 14, y: 30, width: 292, height: 18)
+        speedLabel.frame = NSRect(x: 14, y: 27, width: 292, height: 18)
         speedControl.onDrag = { [weak self] rpm in
             self?.speedLabel.stringValue = "\(T("manual"))　\(rpm) RPM（\(T("releaseApply"))）"
         }
@@ -649,7 +649,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(pauseItem)
         menu.addItem(.separator())
         menu.addItem(makeItem(T("panel"), #selector(openPanel)))
-        let langItem = NSMenuItem(title: "🌐 " + T("language"), action: nil, keyEquivalent: "")
+        menu.addItem(.separator())
+        let langItem = NSMenuItem(title: T("language"), action: nil, keyEquivalent: "")
+        langItem.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
         let langMenu = NSMenu()
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
@@ -663,8 +665,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         langItem.submenu = langMenu
         menu.addItem(langItem)
-        menu.addItem(makeItem(T("installSvc"), #selector(installService)))
-        menu.addItem(makeItem(T("feedback"), #selector(openFeedback)))
+        let svcItem = makeItem(T("installSvc"), #selector(installService))
+        svcItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        menu.addItem(svcItem)
+        let fbItem = makeItem(T("feedback"), #selector(openFeedback))
+        fbItem.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: nil)
+        menu.addItem(fbItem)
+        menu.addItem(.separator())
         menu.addItem(makeItem(T("quit"), #selector(quit)))
         item.menu = menu
 
