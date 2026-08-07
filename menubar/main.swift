@@ -201,7 +201,7 @@ final class ChartView: NSView {
                           rpm: (o["rpm"] as? NSNumber)?.doubleValue ?? 0,
                           mode: o["mode"] as? String ?? "auto")
         }
-        samples = smoothed(samples, window: 5)
+        samples = smoothed(samples, window: 9)
         needsDisplay = true
     }
 
@@ -268,17 +268,43 @@ final class ChartView: NSView {
         drawText("-" + title, at: NSPoint(x: plot.minX, y: padB - 13), size: 9, color: .tertiaryLabelColor)
         drawText(T("now"), at: NSPoint(x: plot.maxX - 34, y: padB - 13), size: 9, color: .tertiaryLabelColor)
 
-        let rline = NSBezierPath(); rline.lineWidth = 1.0
-        rline.move(to: NSPoint(x: px(samples[0].ts), y: pyR(samples[0].rpm)))
-        for s in samples.dropFirst() { rline.line(to: NSPoint(x: px(s.ts), y: pyR(s.rpm))) }
         NSColor.systemTeal.setStroke()
-        rline.stroke()
+        splinePath(samples.map { NSPoint(x: px($0.ts), y: pyR($0.rpm)) }, lineWidth: 1.0).stroke()
 
-        let tline = NSBezierPath(); tline.lineWidth = 1.6
-        tline.move(to: NSPoint(x: px(samples[0].ts), y: pyT(samples[0].temp)))
-        for s in samples.dropFirst() { tline.line(to: NSPoint(x: px(s.ts), y: pyT(s.temp))) }
         NSColor.labelColor.setStroke()
-        tline.stroke()
+        splinePath(samples.map { NSPoint(x: px($0.ts), y: pyT($0.temp)) }, lineWidth: 1.6).stroke()
+    }
+
+    /// 抽稀 + Catmull-Rom 样条：把离散点画成处处圆滑的曲线
+    private func splinePath(_ raw: [NSPoint], lineWidth: CGFloat) -> NSBezierPath {
+        var pts = raw
+        let maxPts = Int(bounds.width / 2.5)          // ~每 2.5px 一个点足够
+        if pts.count > maxPts {
+            let step = Double(pts.count) / Double(maxPts)
+            pts = (0..<maxPts).map { raw[min(raw.count - 1, Int(Double($0) * step))] }
+            pts.append(raw[raw.count - 1])
+        }
+        let path = NSBezierPath()
+        path.lineWidth = lineWidth
+        path.lineJoinStyle = .round
+        path.lineCapStyle = .round
+        guard pts.count > 2 else {
+            if let f = pts.first {
+                path.move(to: f)
+                for p in pts.dropFirst() { path.line(to: p) }
+            }
+            return path
+        }
+        path.move(to: pts[0])
+        for i in 0..<(pts.count - 1) {
+            let p0 = i > 0 ? pts[i - 1] : pts[i]
+            let p1 = pts[i], p2 = pts[i + 1]
+            let p3 = i + 2 < pts.count ? pts[i + 2] : p2
+            let c1 = NSPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6)
+            let c2 = NSPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6)
+            path.curve(to: p2, controlPoint1: c1, controlPoint2: c2)
+        }
+        return path
     }
 
     private func drawLegend() {
