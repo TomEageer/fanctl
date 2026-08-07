@@ -1,0 +1,31 @@
+#!/bin/bash
+# fanctl — CLI for the fanctl smart fan control suite
+STATUS=/tmp/fanctl-status.json
+case "$1" in
+  status)
+    if launchctl print system/io.fanctl.daemon >/dev/null 2>&1; then
+      echo "守护进程: 运行中"
+    else
+      echo "守护进程: 未运行"
+    fi
+    if [ -f "$STATUS" ]; then
+      python3 -c "
+import json,time
+d=json.load(open('$STATUS'))
+age=time.time()-d.get('ts',0)
+mode={'manual':'智能温控中','auto':'待命(系统自动)','paused':'已暂停','max':'手动拉满','battery':'电池供电(不介入)'}.get(d['mode'],d['mode'])
+print('温度: %.1f°C   风扇: %s   功耗: %.1fW   模式: %s%s' % (
+    d['temp'], ('%d rpm'%d['rpm']) if d['rpm'] else '系统自动', d['power'], mode,
+    '   [数据已过期]' if age>90 else ''))"
+    fi
+    tail -3 /var/log/fanctl.log 2>/dev/null
+    ;;
+  stop)   sudo launchctl bootout system/io.fanctl.daemon 2>/dev/null; sleep 1; sudo /usr/local/bin/smcfan auto ;;
+  start)  sudo launchctl bootstrap system /Library/LaunchDaemons/io.fanctl.daemon.plist ;;
+  pause)  echo pause  > /tmp/fanctl-cmd ;;
+  resume) echo resume > /tmp/fanctl-cmd ;;
+  max)    echo max    > /tmp/fanctl-cmd ;;
+  auto)   sudo /usr/local/bin/smcfan auto ;;
+  log)    tail -20 /var/log/fanctl.log ;;
+  *) echo "用法: fanctl status|start|stop|pause|resume|max|auto|log"; exit 2 ;;
+esac
