@@ -1,4 +1,4 @@
-VERSION := 1.9.5
+VERSION := 1.9.6
 
 .PHONY: all install uninstall clean dist
 

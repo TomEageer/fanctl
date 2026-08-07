@@ -319,13 +319,17 @@ def control_tick(temp):
     dw = w - state["w_slow"]
     spike = min(1000.0, max(0.0, dw - 3.0) * prof()["spike"]) if dw > 3.0 else 0.0
     state["w_slow"] = state["w_slow"] * 0.90 + w * 0.10
+    # 前馈专用区间均值（EMA τ≈20s）：发热量按时间积分口径，而非瞬时读数
+    if state.get("w_ff", 0.0) <= 0:
+        state["w_ff"] = w
+    state["w_ff"] = state["w_ff"] * 0.85 + w * 0.15
 
     # 稳态自学习：温度平稳且输出未贴边时，积分携带的常差缓慢迁入前馈增益，
     # 让"功耗→所需转速"的映射长期贴合本机散热效率（学习结果持久化）
     state["temps"] = (state["temps"] + [temp])[-8:]
     if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
             and FAN_MIN + 60 < state["rpm"] < FAN_MAX - 60 and w > 10):
-        corr = state["integ"] / max(w - 8.0, 2.0)
+        corr = state["integ"] / max(state.get("w_ff", w) - 8.0, 2.0)
         new_gain = max(FF_GAIN_MIN, min(FF_GAIN_MAX, state["ff_gain"] + LEARN_RATE * corr))
         if abs(new_gain - state["ff_gain"]) > 0.005:
             state["ff_gain"] = new_gain
@@ -333,7 +337,7 @@ def control_tick(temp):
             state["model_dirty"] = True
     save_model()
 
-    cmd_raw = feedforward_rpm(watts) + spike + damp + prof()["kp"] * err + state["integ"]
+    cmd_raw = feedforward_rpm(state["w_ff"]) + spike + damp + prof()["kp"] * err + state["integ"]
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
     if cmd_raw > FAN_MAX:
