@@ -315,7 +315,8 @@ def control_tick(temp):
     w = watts or 0.0
     if state["w_slow"] <= 0:
         state["w_slow"] = w
-    spike = max(0.0, w - state["w_slow"]) * prof()["spike"]
+    dw = w - state["w_slow"]
+    spike = min(1000.0, max(0.0, dw - 3.0) * prof()["spike"]) if dw > 3.0 else 0.0
     state["w_slow"] = state["w_slow"] * 0.90 + w * 0.10
 
     # 稳态自学习：温度平稳且输出未贴边时，积分携带的常差缓慢迁入前馈增益，
@@ -335,9 +336,9 @@ def control_tick(temp):
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
     if cmd_raw > FAN_MAX:
-        state["integ"] -= 0.2 * (cmd_raw - FAN_MAX)
+        state["integ"] -= 0.06 * (cmd_raw - FAN_MAX)
     elif cmd_raw < FAN_MIN:
-        state["integ"] += 0.2 * (FAN_MIN - cmd_raw)
+        state["integ"] += 0.06 * (FAN_MIN - cmd_raw)
     cmd = max(FAN_MIN, min(FAN_MAX, cmd_raw))
     up = prof()["up"]
     rate_up = up[2] if err > 15 else up[1] if err > 5 else up[0]
