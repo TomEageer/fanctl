@@ -42,9 +42,10 @@ KI           = 6.0    # 积分：缓慢把温度带回目标，三档共用
 
 # 调速性格三档：quiet 尽可能慢慢压 / balanced 压住上升徐徐落温 / cool 尽快压下再回落保持
 PROFILES = {
-    "quiet":    dict(target=58.0, kp=45.0,  kd=200.0, up=(100.0, 200.0, 350.0), down=100.0, spike=25.0),
-    "balanced": dict(target=55.0, kp=70.0,  kd=300.0, up=(150.0, 300.0, 500.0), down=120.0, spike=45.0),
-    "cool":     dict(target=48.0, kp=130.0, kd=450.0, up=(300.0, 500.0, 800.0), down=150.0, spike=60.0),
+    # ff_scale: 前馈按性格缩放; cap: 转速天花板——"安静"承诺的是噪音上限,宁可温度略高
+    "quiet":    dict(target=58.0, kp=45.0,  kd=200.0, up=(100.0, 200.0, 350.0), down=100.0, spike=25.0, ff_scale=0.70, cap=5900.0),
+    "balanced": dict(target=55.0, kp=70.0,  kd=300.0, up=(150.0, 300.0, 500.0), down=120.0, spike=45.0, ff_scale=1.00, cap=FAN_MAX),
+    "cool":     dict(target=48.0, kp=130.0, kd=450.0, up=(300.0, 500.0, 800.0), down=150.0, spike=60.0, ff_scale=1.25, cap=FAN_MAX),
 }
 
 
@@ -298,6 +299,8 @@ def control_tick(temp):
             state["rpm"] = read_actual_rpm()
             state["integ"] = 0.0
             state["cool"] = 0
+            state["last_temp"] = temp
+            state["trend"] = 0.0
             write_rpm(state["rpm"])
             log("temp=%.1f engage from %d rpm (gentle ramp)" % (temp, state["rpm"]))
         write_status("manual" if state["manual"] else "auto")
@@ -337,17 +340,22 @@ def control_tick(temp):
             state["model_dirty"] = True
     save_model()
 
-    cmd_raw = feedforward_rpm(state["w_ff"]) + spike + damp + prof()["kp"] * err + state["integ"]
+    ff = FAN_MIN + (feedforward_rpm(state["w_ff"]) - FAN_MIN) * prof()["ff_scale"]
+    cmd_raw = ff + spike + damp + prof()["kp"] * err + state["integ"]
     # 抗饱和反算（anti-windup back-calculation）：
     # 指令越过硬件上下限时，把积分往回拉到贴着边界，避免"历史欠账"锁死输出
-    if cmd_raw > FAN_MAX:
-        state["integ"] -= 0.06 * (cmd_raw - FAN_MAX)
+    ceil = prof()["cap"]
+    if cmd_raw > ceil:
+        state["integ"] -= 0.06 * (cmd_raw - ceil)
     elif cmd_raw < FAN_MIN:
         state["integ"] += 0.06 * (FAN_MIN - cmd_raw)
-    cmd = max(FAN_MIN, min(FAN_MAX, cmd_raw))
+    cmd = max(FAN_MIN, min(ceil, cmd_raw))
     up = prof()["up"]
     rate_up = up[2] if err > 15 else up[1] if err > 5 else up[0]
-    delta = max(-prof()["down"], min(rate_up, cmd - state["rpm"]))
+    raw_delta = cmd - state["rpm"]
+    delta = max(-prof()["down"], min(rate_up, raw_delta))
+    if raw_delta != delta:
+        state["integ"] -= 0.06 * (raw_delta - delta)   # 限幅期间积分不再空转累压
     state["rpm"] += delta
 
     if temp < prof()["target"] - 9.0:
