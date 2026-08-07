@@ -42,8 +42,12 @@ FAN_MIN      = 2317.0
 FAN_MAX      = 7826.0
 KP           = 120.0
 KI           = 6.0
-RATE_LIMIT   = 200.0
+RATE_UP_1    = 200.0   # 升速斜率：偏差 <5°C
+RATE_UP_2    = 400.0   # 升速斜率：偏差 5~15°C
+RATE_UP_3    = 700.0   # 升速斜率：偏差 >15°C（紧急态果断压制）
+RATE_DOWN    = 150.0   # 降速斜率：始终温柔
 WRITE_BAND   = 75.0
+POWER_HOLD   = 60.0    # 功耗读数失效时沿用上一有效值的时长（秒）
 RELEASE_HOLD = 24
 BATT_POLL    = 30
 
@@ -94,10 +98,15 @@ def read_power_watts():
         out = subprocess.run(["ioreg", "-rn", "AppleSmartBattery"],
                              capture_output=True, text=True, timeout=10).stdout
         m = re.search(r'"SystemPowerIn"=(\d+)', out)
-        if m:
-            return int(m.group(1)) / 1000.0
+        if m and int(m.group(1)) > 0:
+            state["watts_good"] = (int(m.group(1)) / 1000.0, time.time())
+            return state["watts_good"][0]
     except Exception:
         pass
+    # 电源遥测间歇性读 0/失败：短时间内沿用上一有效值，防止前馈塌缩
+    held = state.get("watts_good")
+    if held and time.time() - held[1] < POWER_HOLD:
+        return held[0]
     return None
 
 
@@ -253,7 +262,8 @@ def control_tick(temp):
     state["integ"] = max(-1500.0, min(FAN_MAX - FAN_MIN, state["integ"] + KI * err))
     cmd = feedforward_rpm(watts) + KP * err + state["integ"]
     cmd = max(FAN_MIN, min(FAN_MAX, cmd))
-    delta = max(-RATE_LIMIT, min(RATE_LIMIT, cmd - state["rpm"]))
+    rate_up = RATE_UP_3 if err > 15 else RATE_UP_2 if err > 5 else RATE_UP_1
+    delta = max(-RATE_DOWN, min(rate_up, cmd - state["rpm"]))
     state["rpm"] += delta
 
     if temp < RELEASE_TEMP:
@@ -274,8 +284,8 @@ def control_tick(temp):
 def main():
     signal.signal(signal.SIGTERM, bail)
     signal.signal(signal.SIGINT, bail)
-    log("fanctld started (target=%s engage>%s release<%s rate<=%s rpm/tick)" %
-        (TARGET_TEMP, ENGAGE_TEMP, RELEASE_TEMP, int(RATE_LIMIT)))
+    log("fanctld started (target=%s engage>%s release<%s up<=%s/%s/%s down<=%s rpm/tick)" %
+        (TARGET_TEMP, ENGAGE_TEMP, RELEASE_TEMP, int(RATE_UP_1), int(RATE_UP_2), int(RATE_UP_3), int(RATE_DOWN)))
     try:
         while True:
             if not on_ac_power():
