@@ -97,7 +97,7 @@ Three small programs, each doing one job:
 
 - 📊 **History chart** — temperature + RPM series color-coded by control mode, plus a power curve on the same axis: heat produced vs. heat removed
 - 🎛 **Dual-dot speed control** — solid dot shows live RPM, ring shows your manual setpoint
-- 🌡 **Menu bar temperature** — °C/°F follows the system preference, manual override available
+- 🌡 **Menu bar temperature & power at a glance** <img src="docs/images/statusbar.png" height="26" align="top" alt="menu bar item showing 56° and 30 W"> — °C/°F follows the system preference, manual override available
 - 🗣 **8 languages** — English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Русский
 - 🪟 **Standalone panel window** — for people who hide their menu bar
 - 🧊 **Rendering-friendly** — text redraws only on change; identical text still dirties a menu item and forces macOS to re-blur the whole translucent backdrop, which is exactly how fan utilities end up burning CPU. Fanctl doesn't.
