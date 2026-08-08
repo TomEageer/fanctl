@@ -127,6 +127,16 @@ let L10N: [String: [String: String]] = [
                      "fr": "Contrôle du ventilateur verrouillé — redémarrez le Mac",
                      "de": "Lüftersteuerung gesperrt — Mac neu starten",
                      "ru": "Управление вентилятором заблокировано — перезагрузите Mac"],
+    "errYield":     ["en": "System is holding fan control (usually after wake) — resuming automatically",
+                     "zh": "系统暂时收回了风扇控制（通常发生在唤醒后）· 稍后自动恢复",
+                     "ja": "システムがファン制御を保持中（復帰直後によくあります）· 自動的に再開します",
+                     "ko": "시스템이 팬 제어를 보유 중입니다(주로 절전 해제 직후) · 자동으로 재개됩니다",
+                     "es": "El sistema retiene el control del ventilador (tras reanudar) — se reanudará solo",
+                     "fr": "Le système retient le contrôle du ventilateur (après réveil) — reprise automatique",
+                     "de": "System hält die Lüftersteuerung (meist nach dem Aufwachen) — wird automatisch fortgesetzt",
+                     "ru": "Система удерживает управление вентилятором (обычно после пробуждения) — возобновится автоматически"],
+    "waking":       ["en": "Resuming after wake…", "zh": "唤醒后恢复中…", "ja": "復帰処理中…", "ko": "절전 해제 후 복구 중…",
+                     "es": "Reanudando tras suspensión…", "fr": "Reprise après veille…", "de": "Nach dem Aufwachen…", "ru": "Возобновление после сна…"],
     "errRetry":     ["en": "Fan write failed, retrying…", "zh": "风扇写入失败，重试中…",
                      "ja": "ファン書き込み失敗、再試行中…", "ko": "팬 쓰기 실패, 재시도 중…",
                      "es": "Error de escritura, reintentando…", "fr": "Échec d'écriture, nouvelle tentative…",
@@ -256,7 +266,8 @@ func modeName(_ mode: String, rpm: Double, profile: String = "balanced") -> Stri
     case "auto":    return T("smartStandby")
     case "custom":  return "\(T("manual")) · \(Int(rpm)) RPM"
     case "paused":  return T("systemSched")
-    case "degraded": return T("errLocked")
+    case "waking":   return T("waking")
+    case "degraded": return T("errYield")
     case "battery": return T("batteryMode")
     default:        return mode
     }
@@ -274,6 +285,7 @@ extension NSTextField {
 func errText(_ code: String) -> String {
     switch code {
     case "fan_control_locked": return T("errLocked")
+    case "fan_control_yield":  return T("errYield")
     case "fan_control_retry":  return T("errRetry")
     default:                   return code
     }

@@ -65,6 +65,11 @@ MODE_REASSERT = 20          # 每 N 拍回读一次 SMC 模式，防止被外部
 # 检测到即退避，指数增长，期间只做低频探活，绝不继续敲打。
 SMC_BACKOFF_BASE = 20.0
 SMC_BACKOFF_MAX = 180.0
+# 睡眠唤醒：macOS 在唤醒时收回风扇控制权（F0Md 归 0 且短时拒绝用户写入）。
+# 这是正常过渡而非故障——检测到时间跳变即判定唤醒，礼让一段时间再接管。
+WAKE_GAP = 120.0            # 相邻控制拍间隔超过此值即视为刚从睡眠恢复
+WAKE_GRACE = 45.0           # 唤醒后让系统自行稳定的等待时间
+LOCK_ESCALATE = 600.0       # 持续这么久仍拿不到控制权，才升级为"需要重启"
 
 # 调速性格：quiet 有噪音天花板 / balanced 压住上升徐徐落温 / cool 尽快压下再回落保持
 PROFILES = {
@@ -200,8 +205,9 @@ def smc_backoff(reason):
         state["smc_first_fail"] = time.time()
     stuck = time.time() - state["smc_first_fail"]
     mode = read_fan_field("F0Md")
-    state["err"] = ("fan_control_locked" if stuck > 300 or (mode not in (0.0, 1.0, None))
-                    else "fan_control_retry")
+    # 分级：刚开始拿不到控制权多半是唤醒/系统临时接管，属正常；持续十分钟才算真故障
+    state["err"] = ("fan_control_locked" if stuck > LOCK_ESCALATE
+                    else "fan_control_yield")
     if n <= 3 or n % 20 == 0:
         log("fan write rejected (%s), F0Md=%s, backing off %.0fs (fail #%d, stuck %.0fmin)"
             % (reason, mode, wait, n, stuck / 60))
@@ -217,8 +223,12 @@ def write_rpm(rpm):
     r = smcfan("set", str(int(rpm)))
     if r and r.returncode == 3:              # 系统接管（F0Md 非 0/1）：不与之争抢
         n = state["smc_fails"] = state.get("smc_fails", 0) + 1
+        if state.get("smc_first_fail") is None:
+            state["smc_first_fail"] = time.time()
         state["smc_until"] = time.time() + min(SMC_BACKOFF_BASE * n, SMC_BACKOFF_MAX)
-        state["err"] = "fan_control_locked"
+        state["err"] = ("fan_control_locked"
+                        if time.time() - state["smc_first_fail"] > LOCK_ESCALATE
+                        else "fan_control_yield")
         if n <= 2 or n % 20 == 0:
             log("system holds fan control (F0Md override) — standing by")
         return False
@@ -649,6 +659,16 @@ def handle_command():
 def control_tick(temp):
     state["ticks"] += 1
     state["temp"] = temp
+    now_ts = time.time()
+    gap = now_ts - state.get("last_tick", now_ts)
+    state["last_tick"] = now_ts
+    if gap > WAKE_GAP:                       # 睡眠唤醒：不与系统抢，先礼让
+        log("wake detected (gap %.0fs) — yielding fan control for %.0fs" % (gap, WAKE_GRACE))
+        state.update(smc_until=now_ts + WAKE_GRACE, smc_fails=0, smc_first_fail=None,
+                     err=None, manual=False, rpm=0.0, written=0.0, integ=0.0,
+                     trend=0.0, last_temp=None, cool=0)
+        write_status("waking")
+        return
     if not smc_ok():                     # 退避期：不写 SMC，但温度监控照常
         state["act"] = 0
         state["power"] = read_power_watts() or 0.0
@@ -687,8 +707,10 @@ def control_tick(temp):
 
     # 智能调速期间周期性校验 SMC 仍在手动档（睡眠唤醒后可能被复位）
     if state["ticks"] % MODE_REASSERT == 0 and smc_manual_mode() is False:
-        log("SMC reverted to auto — reasserting manual control")
-        write_rpm(state["rpm"])
+        log("SMC reverted to auto (system) — re-engaging on next cycle")
+        state.update(manual=False, rpm=0.0, written=0.0, integ=0.0, trend=0.0, last_temp=None)
+        write_status("auto")
+        return
 
     err = temp - p["target"]
     state["integ"] = max(-1500.0, min(fan_max - fan_min, state["integ"] + p["ki"] * err))
