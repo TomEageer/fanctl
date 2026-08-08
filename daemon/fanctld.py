@@ -57,6 +57,17 @@ FF_GAIN_MIN = 60.0
 FF_GAIN_MAX = 200.0
 FF_GAIN_DEFAULT = 110.0
 LEARN_RATE = 0.02
+# 前馈平衡转速映射：单一线性增益在高功耗段必然外推过冲——整机瓦数里屏幕/外设/
+# 电源损耗不进散热片、且占比随功率变化，62W 时线性外推的基线甚至超过满转。
+# 改为按功率锚点学习"守住目标所需的平衡转速"：锚点间插值、末端顺斜率延伸；
+# 每档独立（目标温度不同，平衡转速不可共用），锚点初值取自该档原线性增益，
+# 稳态自学习逐锚点修正。
+FF_KNOTS_W = (10.0, 20.0, 35.0, 55.0, 80.0)
+FF_DELTA_MAX = 12000.0
+# 前馈永不吃满执行器：给 PI 反馈留出下调权威。前馈一旦饱和越过满转，积分必须
+# 先攒出数百转的负差才碰得到实际输出，振荡负载下永远攒不齐——表现为"温度已经
+# 压住、风扇仍钉在满转"。
+FF_HEADROOM = 600.0
 RELEASE_HOLD = 24           # 连续 N 拍低温才交还系统（~72s）
 BATT_POLL = 30
 MODE_REASSERT = 20          # 每 N 拍回读一次 SMC 模式，防止被外部复位
@@ -291,6 +302,8 @@ TM_REFIT_EVERY = 40
 TM_MIN_SAMPLES = 120      # 约 6 分钟连续数据
 TM_RIDGE = 1e-5
 TM_DIM = 5
+TM_RMS_MAX = 15.0         # 残差门槛（W）：超过说明模型没解释数据，属退化解不发布
+TM_AMB_LO, TM_AMB_HI = 10.0, 40.0   # 环境温度一维搜索范围；解贴边界=退化，拒绝
 # 关于可辨识性：闭环下转速由温度决定，(T) 与 (r·T) 高度共线，k0/k1/T_amb 的"拆分"
 # 长期偏斜。实测（合成数据）表明这不影响我们真正使用的量——工作区间内的散热功率
 # h·ΔT 预测误差约 4%。曾评估过叠加正弦抖动做持续激励：只有幅度大到 ±330 RPM 才
@@ -434,8 +447,8 @@ def tm_fit():
         return
     cap_s = machine_prior()[0]
     best = None
-    a = 10.0
-    while a <= 40.0:
+    a = TM_AMB_LO
+    while a <= TM_AMB_HI:
         r = tm_solve_at(a, cap_s)
         if r:
             th, sse = r
@@ -446,10 +459,23 @@ def tm_fit():
         return
     (th, tamb), sse = best
     k0, k1 = th
+    rms = (sse / max(tm["n"], 1.0)) ** 0.5
+    # 质量门禁：退化解一旦发布会喂给 UI 的产热/散热对比与 diss 估算
+    #（曾出现 T_amb 钉在搜索下界 10°C、rms 47W 仍被发布的实例）
+    reason = None
     if not (0.02 <= k0 <= 5.0 and 0.01 <= k1 <= 3.0):
+        reason = "coeffs out of range (k0=%.3f k1=%.3f)" % (k0, k1)
+    elif tamb <= TM_AMB_LO + 0.5 or tamb >= TM_AMB_HI - 0.5:
+        reason = "T_amb pinned at search bound (%.1f°C)" % tamb
+    elif rms > TM_RMS_MAX:
+        reason = "residual too large (rms=%.1fW)" % rms
+    if reason:
+        tm["rej"] = tm.get("rej", 0) + 1
+        if tm["rej"] <= 2 or tm["rej"] % 30 == 0:
+            log("thermal model fit rejected: %s (n=%.0f, #%d)" % (reason, tm["n"], tm["rej"]))
         return
-    tm.update(k0=k0, k1=k1, tamb=tamb, cap=cap_s * 100.0,
-              rms=(sse / max(tm["n"], 1.0)) ** 0.5)
+    tm["rej"] = 0
+    tm.update(k0=k0, k1=k1, tamb=tamb, cap=cap_s * 100.0, rms=rms)
     log("thermal model: h=%.3f+%.3f·(rpm/1000) W/°C, T_amb=%.1f°C (C=%.0f prior), "
         "rms=%.1fW, n=%.0f" % (k0, k1, tamb, tm["cap"], tm["rms"], tm["n"]))
 
@@ -482,6 +508,64 @@ def prof():
 
 def ff_gain():
     return state["gains"].get(state["profile"], FF_GAIN_DEFAULT)
+
+
+def ff_map():
+    """当前档的平衡转速映射（各锚点相对 fan_min 的 Δrpm，未乘 ff_scale）。
+    惰性初始化自该档线性增益，保证升级瞬间行为与旧版一致。"""
+    maps = state.setdefault("ffmap", {})
+    m = maps.get(state["profile"])
+    if not m:
+        g = ff_gain()
+        m = [max(0.0, (w - 8.0) * g) for w in FF_KNOTS_W]
+        maps[state["profile"]] = m
+    return m
+
+
+def ff_delta(w):
+    """插值求功耗 w 的前馈 Δrpm：低于首锚按比例缩，超出末锚顺末段斜率延伸。"""
+    m = ff_map()
+    ks = FF_KNOTS_W
+    if w <= 8.0:
+        return 0.0
+    if w <= ks[0]:
+        return m[0] * (w - 8.0) / (ks[0] - 8.0)
+    for i in range(len(ks) - 1):
+        if w <= ks[i + 1]:
+            f = (w - ks[i]) / (ks[i + 1] - ks[i])
+            return m[i] + (m[i + 1] - m[i]) * f
+    slope = (m[-1] - m[-2]) / (ks[-1] - ks[-2])
+    return m[-1] + (w - ks[-1]) * slope
+
+
+def ff_learn(w, corr):
+    """把 corr（rpm，ff_scale 口径）按插值权重迁进相邻锚点，并保持映射单调不减。"""
+    m = ff_map()
+    ks = FF_KNOTS_W
+    d = corr / max(prof()["ff_scale"], 0.1)
+    if w <= ks[0]:
+        m[0] += d
+    elif w >= ks[-1]:
+        m[-1] += d
+    else:
+        for i in range(len(ks) - 1):
+            if w <= ks[i + 1]:
+                f = (w - ks[i]) / (ks[i + 1] - ks[i])
+                # 权重平方和归一：让 w 处的插值恰好移动 d（保积分回代的指令连续）
+                norm = (1.0 - f) ** 2 + f ** 2
+                m[i] += d * (1.0 - f) / norm
+                m[i + 1] += d * f / norm
+                break
+    for i in range(len(m)):
+        m[i] = max(0.0, min(FF_DELTA_MAX, m[i]))
+    # 单调投影（更高功耗不可能需要更低的平衡转速）须顺着学习方向做：
+    # 下修时只把下方锚点往下带、上修时只把上方锚点往上带——反向钳位会抵消学习
+    if corr < 0:
+        for i in range(len(m) - 2, -1, -1):
+            m[i] = min(m[i], m[i + 1])
+    else:
+        for i in range(1, len(m)):
+            m[i] = max(m[i], m[i - 1])
 
 
 def load_model():
@@ -518,6 +602,13 @@ def load_model():
         for k, v in gains.items():
             if k in PROFILES:
                 state["gains"][k] = max(FF_GAIN_MIN, min(FF_GAIN_MAX, float(v)))
+    ffmap = m.get("ffmap")
+    if isinstance(ffmap, dict):          # 平衡转速映射（v2.6+），逐档校验后载入
+        for k, v in ffmap.items():
+            if (k in PROFILES and isinstance(v, list) and len(v) == len(FF_KNOTS_W)
+                    and all(isinstance(x, (int, float)) for x in v)):
+                state.setdefault("ffmap", {})[k] = [
+                    max(0.0, min(FF_DELTA_MAX, float(x))) for x in v]
     elif isinstance(m.get("ff_gain"), (int, float)):   # v1.9 及更早的单值格式
         g = max(FF_GAIN_MIN, min(FF_GAIN_MAX, float(m["ff_gain"])))
         state["gains"]["balanced"] = g
@@ -534,6 +625,8 @@ def save_model(force=False):
         os.makedirs(RUNDIR, exist_ok=True)
         write_file_safe(MODEL, json.dumps({
             "gains": {k: round(v, 2) for k, v in state["gains"].items()},
+            "ffmap": {k: [round(x, 1) for x in v]
+                      for k, v in state.get("ffmap", {}).items()},
             "profile": state["profile"], "updated": now, "machine": state["machine"],
             "thermal": {"S": state["tm"]["S"], "b": state["tm"]["b"],
                         "syy": state["tm"]["syy"], "n": state["tm"]["n"],
@@ -632,6 +725,7 @@ def handle_command():
         log("override cleared, smart control resumed")
     elif verb == "resetmodel":
         state["gains"] = {}
+        state["ffmap"] = {}
         state["integ"] = 0.0
         state["model_dirty"] = True
         save_model(force=True)
@@ -764,20 +858,21 @@ def control_tick(temp):
         demand += min(0.5, state["trend"] * 4.0)
     demand = max(0.0, min(1.0, demand))
     state["ff_demand"] = demand
-    ff_full = fan_min + max(0.0, state["w_ff"] - 8.0) * ff_gain() * p["ff_scale"]
+    ff_full = fan_min + ff_delta(state["w_ff"]) * p["ff_scale"]
     ff = fan_min + (ff_full - fan_min) * demand
+    ff = min(ff, fan_max - FF_HEADROOM)   # 结构性保险：前馈永不吃满，PI 始终有下调权威
 
-    # 稳态自学习：把积分携带的常差按当前性格迁进前馈增益（精确回代，保持指令连续）
+    # 稳态自学习：把积分携带的常差迁进平衡转速映射的相邻锚点（精确回代，指令连续）。
+    # 注：前馈加了 HEADROOM 上限后，高功耗段转速不再钉满转，"未饱和"门禁得以满足，
+    # 高功率锚点从此真正可学——旧版正因满转饱和，高功耗段的增益从未被修正过。
     state["temps"] = (state["temps"] + [temp])[-8:]
     if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
             and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10
             and demand > 0.8):
-        base = max(state["w_ff"] - 8.0, 2.0)
-        old = ff_gain()
-        new = max(FF_GAIN_MIN, min(FF_GAIN_MAX, old + LEARN_RATE * state["integ"] / base))
-        if abs(new - old) > 0.005:
-            state["gains"][state["profile"]] = new
-            state["integ"] -= base * (new - old) * p["ff_scale"]
+        corr = LEARN_RATE * state["integ"]
+        if abs(corr) > 0.5:
+            ff_learn(state["w_ff"], corr)
+            state["integ"] -= corr
             state["model_dirty"] = True
     save_model()
 

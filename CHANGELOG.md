@@ -8,6 +8,18 @@ available as a git tag.
 
 ---
 
+## 2.6 — Equilibrium-map feedforward · 平衡转速映射前馈
+
+**EN**
+- **Root fix for "temperature held, fans still pinned at max"**: the feedforward mapped whole-system watts through a single linear gain, and at high power (62 W) the commanded baseline exceeded the fan's physical maximum — a saturated feedforward leaves the PI no downward authority (the integrator must accumulate hundreds of RPM of negative bias before touching the real output, which an oscillating load never allows). Replaced with a **per-profile equilibrium-RPM map** learned at power knots (10/20/35/55/80 W): interpolated between knots, slope-extended beyond, initialized from the old linear gain so behavior is identical at upgrade time. Steady-state learning now migrates the integral into the two bracketing knots (weight-squared-normalized so the command stays continuous), with a direction-aware monotone projection. The feedforward is additionally capped at `fanMax − 600` — it can never saturate the actuator again, which also un-blocks learning in the high-power band (previously impossible while pinned).
+- **Thermal model fit quality gates**: degenerate fits were being published (T_amb pinned at the 10 °C search bound, residual RMS 47 W) and fed the heat-produced/removed chart. Fits are now rejected — with a logged reason — when coefficients leave physical range, T_amb lands on a search bound, or RMS exceeds 15 W.
+- Verified by 20 offline checks importing the real daemon module: init-equivalence with the old formula, saturation repro, convergence to a known equilibrium in simulation, command continuity (Δ = 0.00 RPM), monotonicity, serialization round-trip, and the fit gate rejecting synthetic degenerate data while recovering exact parameters from clean data.
+
+**中文**
+- **根治"温度压住了、风扇还钉在满转"**：前馈原是"整机瓦数 × 单一线性增益"，高功耗（62 W）时算出的基线超过风扇物理上限——前馈一旦饱和，PI 就失去下调权威（积分要先攒出数百转的负差才碰得到实际输出，振荡负载下永远攒不齐）。改为**按功率锚点（10/20/35/55/80 W）逐档学习的平衡转速映射**：锚点间插值、末端顺斜率延伸，初值取自旧线性增益（升级瞬间行为不变）。稳态学习把积分迁进相邻两锚点（权重平方和归一，保证指令连续），单调投影顺着学习方向做。前馈另加 `fanMax − 600` 硬上限——永不吃满执行器，也让高功率段的学习从此可行（旧版满转饱和时该段从未被修正过）。
+- **热模型拟合质量门禁**：退化解曾被照常发布（环境温度钉在 10 °C 搜索下界、残差 RMS 47 W）并喂给产热/散热对比图。现在系数越界、环境温度贴搜索边界、或 RMS 超 15 W 的拟合一律拒绝并记录原因。
+- 由 20 项导入真实模块的离线检查验证：与旧公式的初始等价性、饱和复现、仿真收敛到已知平衡点、指令连续（Δ = 0.00 RPM）、单调性、序列化往返、以及门禁拒绝合成退化数据/从干净数据精确还原参数。
+
 ## 2.5 — Units & honest diagnostics · 单位与诚实的诊断
 
 **EN**
