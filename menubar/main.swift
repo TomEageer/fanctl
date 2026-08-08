@@ -119,6 +119,18 @@ let L10N: [String: [String: String]] = [
                      "es": "Calor generado", "fr": "Chaleur produite", "de": "Wärmeerzeugung", "ru": "Тепловыделение"],
     "heatOut":      ["en": "Heat removed", "zh": "散热量", "ja": "放熱量", "ko": "방열량",
                      "es": "Calor disipado", "fr": "Chaleur évacuée", "de": "Wärmeabfuhr", "ru": "Теплоотвод"],
+    "errLocked":    ["en": "Fan control locked by the system — restart to restore",
+                     "zh": "风扇控制被系统锁定 · 重启可恢复（温度监控正常）",
+                     "ja": "ファン制御がシステムにロックされています · 再起動で復旧",
+                     "ko": "팬 제어가 시스템에 잠김 · 재시동하면 복구됩니다",
+                     "es": "Control del ventilador bloqueado — reinicie el Mac",
+                     "fr": "Contrôle du ventilateur verrouillé — redémarrez le Mac",
+                     "de": "Lüftersteuerung gesperrt — Mac neu starten",
+                     "ru": "Управление вентилятором заблокировано — перезагрузите Mac"],
+    "errRetry":     ["en": "Fan write failed, retrying…", "zh": "风扇写入失败，重试中…",
+                     "ja": "ファン書き込み失敗、再試行中…", "ko": "팬 쓰기 실패, 재시도 중…",
+                     "es": "Error de escritura, reintentando…", "fr": "Échec d'écriture, nouvelle tentative…",
+                     "de": "Schreibfehler, erneuter Versuch…", "ru": "Ошибка записи, повтор…"],
     "noData":       ["en": "—", "zh": "—", "ja": "—", "ko": "—", "es": "—", "fr": "—", "de": "—", "ru": "—"],
     "uninstall":    ["en": "Uninstall Fanctl…", "zh": "卸载 Fanctl…", "ja": "Fanctl をアンインストール…", "ko": "Fanctl 제거…",
                      "es": "Desinstalar Fanctl…", "fr": "Désinstaller Fanctl…", "de": "Fanctl deinstallieren…", "ru": "Удалить Fanctl…"],
@@ -203,7 +215,7 @@ let L10N: [String: [String: String]] = [
                      "ru": "Отменено или произошла ошибка. Повторите через «Установить / обновить службу…» в меню."],
 ]
 
-struct Sample { let ts, temp: Double; let rpm: Double; let w: Double; let mode: String; let pf: String }
+struct Sample { let ts, temp: Double; let rpm: Double?; let w: Double; let mode: String; let pf: String }
 
 func modeColor(_ mode: String) -> NSColor {
     switch mode {
@@ -228,8 +240,17 @@ func modeName(_ mode: String, rpm: Double, profile: String = "balanced") -> Stri
     case "auto":    return T("smartStandby")
     case "custom":  return "\(T("manual")) · \(Int(rpm)) RPM"
     case "paused":  return T("systemSched")
+    case "degraded": return T("errLocked")
     case "battery": return T("batteryMode")
     default:        return mode
+    }
+}
+
+func errText(_ code: String) -> String {
+    switch code {
+    case "fan_control_locked": return T("errLocked")
+    case "fan_control_retry":  return T("errRetry")
+    default:                   return code
     }
 }
 
@@ -274,7 +295,7 @@ final class ChartView: NSView {
                   let ts = (o["ts"] as? NSNumber)?.doubleValue, ts >= cutoff,
                   let t  = (o["temp"] as? NSNumber)?.doubleValue, t > 1 else { return nil }
             return Sample(ts: ts, temp: t,
-                          rpm: (o["rpm"] as? NSNumber)?.doubleValue ?? 0,
+                          rpm: (o["rpm"] as? NSNumber)?.doubleValue,
                           w: (o["w"] as? NSNumber)?.doubleValue ?? 0,
                           mode: o["mode"] as? String ?? "auto",
                           pf: o["pf"] as? String ?? "balanced")
@@ -297,7 +318,8 @@ final class ChartView: NSView {
             let a = max(0, i - half), b = min(raw.count - 1, i + half)
             let n = Double(b - a + 1)
             let t = raw[a...b].reduce(0.0) { $0 + $1.temp } / n
-            let r = raw[a...b].reduce(0.0) { $0 + $1.rpm } / n
+            let rs = raw[a...b].compactMap { $0.rpm }
+            let r: Double? = rs.isEmpty ? nil : rs.reduce(0, +) / Double(rs.count)
             let p = raw[a...b].reduce(0.0) { $0 + $1.w } / n
             return Sample(ts: s.ts, temp: t, rpm: r, w: p, mode: s.mode, pf: s.pf)
         }
@@ -331,7 +353,8 @@ final class ChartView: NSView {
         // 瓦特轴：模型就绪后产热/散热同轴直接比较（散热>产热即降温）
         let wMax: Double = {
             guard thermal != nil else { return 60 }
-            let peak = samples.map { max($0.w, dissipation(rpm: $0.rpm, temp: $0.temp) ?? 0) }.max() ?? 60
+            let peak = samples.map { s in
+                max(s.w, s.rpm.flatMap { dissipation(rpm: $0, temp: s.temp) } ?? 0) }.max() ?? 60
             return max(20, (peak / 10).rounded(.up) * 10)
         }()
         func pyWatt(_ v: Double) -> CGFloat { plot.minY + CGFloat(min(v, wMax) / wMax) * plot.height }
@@ -389,7 +412,8 @@ final class ChartView: NSView {
             strokeSeries(samples.map { (px($0.ts), pyWatt($0.w), $0.ts) }, lineWidth: 1.0, dashed: true)
             NSColor.systemTeal.setStroke()
             strokeSeries(samples.compactMap { s in
-                dissipation(rpm: s.rpm, temp: s.temp).map { (px(s.ts), pyWatt($0), s.ts) }
+                s.rpm.flatMap { dissipation(rpm: $0, temp: s.temp) }
+                     .map { (px(s.ts), pyWatt($0), s.ts) }
             }, lineWidth: 1.2)
         } else {
             if samples.contains(where: { $0.w > 0 }) {
@@ -397,7 +421,8 @@ final class ChartView: NSView {
                 strokeSeries(samples.map { (px($0.ts), pyW($0.w), $0.ts) }, lineWidth: 1.0, dashed: true)
             }
             NSColor.systemTeal.setStroke()
-            strokeSeries(samples.map { (px($0.ts), pyR($0.rpm), $0.ts) }, lineWidth: 1.0)
+            strokeSeries(samples.compactMap { s in
+                s.rpm.map { (px(s.ts), pyR($0), s.ts) } }, lineWidth: 1.0)
         }
 
         NSColor.labelColor.setStroke()
@@ -831,7 +856,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let profNow = j["profile"] as? String ?? "balanced"
         subLine.stringValue = (powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
             + modeName(mode, rpm: rpm, profile: profNow)
-            + ((j["err"] as? String).map { "  ⚠️ " + $0 } ?? "")
+            + ((j["err"] as? String).map { "  ⚠️ " + errText($0) } ?? "")
         for item in smartPop.itemArray.dropFirst() {
             item.state = ((item.representedObject as? String) == profNow) ? .on : .off
         }
@@ -1342,7 +1367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tempRow.title  = T("cpuTemp") + "　" + (tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
             + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : "")
         powerRow.title = T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData"))
-        if let e = j["err"] as? String { modeRow.title = "⚠️ " + e }
+        if let e = j["err"] as? String { modeRow.title = "⚠️ " + errText(e) }
         let profNow0 = j["profile"] as? String ?? "balanced"
         if j["err"] == nil || j["err"] is NSNull {
             modeRow.title = "\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0)

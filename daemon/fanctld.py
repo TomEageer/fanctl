@@ -189,12 +189,20 @@ def set_auto(reason=""):
 
 
 def smc_backoff(reason):
-    """进入退避：SMC 疑似保护态，暂停访问让其自愈。"""
+    """写入失败退避。持续失败通常源于睡眠唤醒后 SMC 把风扇键锁定（F0Md 读出异常值、
+    写入返回 -126），此状态无法由软件解除，重启可恢复；期间仍继续温度监控。"""
     n = state["smc_fails"] = state.get("smc_fails", 0) + 1
     wait = min(SMC_BACKOFF_BASE * (2 ** (n - 1)), SMC_BACKOFF_MAX)
     state["smc_until"] = time.time() + wait
-    state["err"] = "SMC busy — backing off %ds" % int(wait)
-    log("SMC unhealthy (%s), backing off %.0fs (fail #%d)" % (reason, wait, n))
+    if state.get("smc_first_fail") is None:
+        state["smc_first_fail"] = time.time()
+    stuck = time.time() - state["smc_first_fail"]
+    mode = read_fan_field("F0Md")
+    state["err"] = ("fan_control_locked" if stuck > 300 or (mode not in (0.0, 1.0, None))
+                    else "fan_control_retry")
+    if n <= 3 or n % 20 == 0:
+        log("fan write rejected (%s), F0Md=%s, backing off %.0fs (fail #%d, stuck %.0fmin)"
+            % (reason, mode, wait, n, stuck / 60))
 
 
 def smc_ok():
@@ -209,6 +217,7 @@ def write_rpm(rpm):
         state["written"] = rpm
         state["manual"] = True
         state["smc_fails"] = 0
+        state["smc_first_fail"] = None
         state["err"] = None
         return True
     smc_backoff("write %d rpm" % rpm)
@@ -549,12 +558,13 @@ def write_status(mode):
 
 
 def append_history(mode):
-    if mode == "battery" or state["act"] <= 0:   # 无有效读数：不记录，让曲线留断口
+    if mode == "battery":                 # 电池模式不采样
         return
     try:
         append_file_safe(HISTORY, json.dumps({
             "ts": round(time.time(), 1), "temp": round(state["temp"], 1),
-            "rpm": state["act"], "w": round(state["power"], 1),
+            "rpm": state["act"] if state["act"] > 0 else None,
+            "w": round(state["power"], 1),
             "mode": mode, "pf": state["profile"]}) + "\n")
         state["hist_n"] += 1
         if state["hist_n"] >= 400:
@@ -630,19 +640,16 @@ def handle_command():
 def control_tick(temp):
     state["ticks"] += 1
     state["temp"] = temp
-    if not smc_ok():                     # 退避期：只更新展示，不碰 SMC
+    if not smc_ok():                     # 退避期：不写 SMC，但温度监控照常
         state["act"] = 0
         state["power"] = read_power_watts() or 0.0
-        write_status("manual" if state["manual"] else "auto")
+        write_status("degraded")
         return
     watts = read_power_watts()
     state["power"] = watts or 0.0
     act = read_fan_field("F0Ac")
     state["act"] = int(act) if act else 0
-    if state["manual"] and state["act"] == 0:      # 手动档却读到 0 = 接口被顶住
-        smc_backoff("read returned 0")
-        write_status("manual")
-        return
+
 
     handle_command()
 
