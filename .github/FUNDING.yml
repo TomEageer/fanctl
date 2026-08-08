@@ -1,0 +1,4 @@
+# GitHub 赞助按钮。填好对应字段即会在仓库页面顶部显示 Sponsor 按钮。
+# github: [TomEageer]          # 需先开通 GitHub Sponsors
+# ko_fi: your-kofi-name
+custom: ["https://github.com/TomEageer/fanctl/blob/main/DONATE.md"]

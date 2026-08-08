@@ -1,4 +1,4 @@
-VERSION := 2.3.3
+VERSION := 2.4.0
 
 .PHONY: all install uninstall clean dist
 
@@ -15,7 +15,7 @@ build/Fanctl.app: menubar/main.swift menubar/Info.plist build/smcfan bin/fanctl 
 	@mkdir -p build/Fanctl.app/Contents/MacOS build/Fanctl.app/Contents/Resources
 	swiftc -O -target arm64-apple-macos13.0 -o build/Fanctl.app/Contents/MacOS/fanctl-bar menubar/main.swift
 	cp menubar/Info.plist build/Fanctl.app/Contents/Info.plist
-	cp build/smcfan daemon/fanctld.py bin/fanctl uninstall.sh \
+	cp build/smcfan daemon/fanctld.py bin/fanctl uninstall.sh menubar/donate.json \
 	   launchd/io.fanctl.daemon.plist launchd/io.fanctl.restore.plist scripts/install-helper.sh \
 	   assets/AppIcon.icns \
 	   build/Fanctl.app/Contents/Resources/

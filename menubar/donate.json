@@ -1,0 +1,19 @@
+{
+  "_comment": "捐赠信息配置。填好后重新 make 即可打进 App；留空的条目不会显示。",
+  "page": "https://github.com/TomEageer/fanctl/blob/main/DONATE.md",
+  "links": [
+    { "label": "GitHub Sponsors", "url": "" },
+    { "label": "Ko-fi", "url": "" }
+  ],
+  "qr": [
+    { "label": "支付宝", "image": "donate-alipay.png" },
+    { "label": "微信支付", "image": "donate-wechat.png" }
+  ],
+  "crypto": [
+    { "label": "USDT/USDC · TRON (TRC20)", "address": "" },
+    { "label": "USDT/USDC · Base", "address": "" },
+    { "label": "USDC · Solana", "address": "" },
+    { "label": "ETH · Ethereum/Base/Arbitrum", "address": "" },
+    { "label": "BTC · Bitcoin", "address": "" }
+  ]
+}

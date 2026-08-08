@@ -132,6 +132,22 @@ let L10N: [String: [String: String]] = [
                      "es": "Error de escritura, reintentando…", "fr": "Échec d'écriture, nouvelle tentative…",
                      "de": "Schreibfehler, erneuter Versuch…", "ru": "Ошибка записи, повтор…"],
     "noData":       ["en": "—", "zh": "—", "ja": "—", "ko": "—", "es": "—", "fr": "—", "de": "—", "ru": "—"],
+    "donate":       ["en": "Support Fanctl…", "zh": "赞赏支持…", "ja": "開発を支援…", "ko": "후원하기…",
+                     "es": "Apoyar Fanctl…", "fr": "Soutenir Fanctl…", "de": "Fanctl unterstützen…", "ru": "Поддержать Fanctl…"],
+    "donateIntro":  ["en": "Fanctl is free and open source, with no ads and no telemetry. A tip is entirely optional.",
+                     "zh": "Fanctl 免费开源，没有广告也没有埋点。赞赏完全自愿，所有功能永久免费。",
+                     "ja": "Fanctl は広告も計測もない無料のオープンソースです。支援は任意です。",
+                     "ko": "Fanctl은 광고와 추적이 없는 무료 오픈소스입니다. 후원은 선택 사항입니다.",
+                     "es": "Fanctl es libre y de código abierto, sin anuncios ni telemetría. La donación es opcional.",
+                     "fr": "Fanctl est libre et open source, sans publicité ni télémétrie. Le don est facultatif.",
+                     "de": "Fanctl ist frei und quelloffen, ohne Werbung und Telemetrie. Spenden sind freiwillig.",
+                     "ru": "Fanctl — свободное ПО с открытым кодом, без рекламы и телеметрии. Донат необязателен."],
+    "copyAddr":     ["en": "Copy", "zh": "复制", "ja": "コピー", "ko": "복사",
+                     "es": "Copiar", "fr": "Copier", "de": "Kopieren", "ru": "Копировать"],
+    "copied":       ["en": "Copied", "zh": "已复制", "ja": "コピーしました", "ko": "복사됨",
+                     "es": "Copiado", "fr": "Copié", "de": "Kopiert", "ru": "Скопировано"],
+    "openPage":     ["en": "Open full page", "zh": "打开完整页面", "ja": "全ページを開く", "ko": "전체 페이지 열기",
+                     "es": "Abrir página", "fr": "Ouvrir la page", "de": "Seite öffnen", "ru": "Открыть страницу"],
     "uninstall":    ["en": "Uninstall Fanctl…", "zh": "卸载 Fanctl…", "ja": "Fanctl をアンインストール…", "ko": "Fanctl 제거…",
                      "es": "Desinstalar Fanctl…", "fr": "Désinstaller Fanctl…", "de": "Fanctl deinstallieren…", "ru": "Удалить Fanctl…"],
     "uninstallMsg": ["en": "This removes the background service, restores system fan control, and deletes Fanctl.",
@@ -1063,6 +1079,128 @@ final class UpdateProgressController: NSObject, URLSessionDownloadDelegate {
     }
 }
 
+// MARK: - 赞赏窗口（内容由 Resources/donate.json 驱动，未配置的条目自动隐藏）
+
+final class DonateController: NSObject {
+    static var shared: DonateController?
+    private var window: NSWindow?
+
+    private func config() -> [String: Any] {
+        guard let p = Bundle.main.path(forResource: "donate", ofType: "json"),
+              let d = FileManager.default.contents(atPath: p),
+              let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return j
+    }
+
+    func show() {
+        if let w = window { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        let cfg = config()
+        let links = (cfg["links"] as? [[String: String]] ?? []).filter { !($0["url"] ?? "").isEmpty }
+        let qrs = (cfg["qr"] as? [[String: String]] ?? []).compactMap { item -> (String, NSImage)? in
+            guard let f = item["image"],
+                  let p = Bundle.main.path(forResource: (f as NSString).deletingPathExtension,
+                                           ofType: (f as NSString).pathExtension),
+                  let img = NSImage(contentsOfFile: p) else { return nil }
+            return (item["label"] ?? "", img)
+        }
+        let coins = (cfg["crypto"] as? [[String: String]] ?? []).filter { !($0["address"] ?? "").isEmpty }
+
+        let width: CGFloat = 420
+        var y: CGFloat = 20
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 10))
+
+        let title = NSTextField(labelWithString: "❤️  " + T("donate").replacingOccurrences(of: "…", with: ""))
+        title.font = .systemFont(ofSize: 17, weight: .semibold)
+        title.frame = NSRect(x: 24, y: y, width: width - 48, height: 24); y += 30
+        root.addSubview(title)
+
+        let intro = NSTextField(wrappingLabelWithString: T("donateIntro"))
+        intro.font = .systemFont(ofSize: 12)
+        intro.textColor = .secondaryLabelColor
+        intro.frame = NSRect(x: 24, y: y, width: width - 48, height: 34); y += 44
+        root.addSubview(intro)
+
+        if !qrs.isEmpty {
+            var x: CGFloat = 24
+            for (label, img) in qrs.prefix(2) {
+                let iv = NSImageView(frame: NSRect(x: x, y: y, width: 150, height: 150))
+                iv.image = img
+                iv.imageScaling = .scaleProportionallyUpOrDown
+                root.addSubview(iv)
+                let cap = NSTextField(labelWithString: label)
+                cap.font = .systemFont(ofSize: 11)
+                cap.textColor = .secondaryLabelColor
+                cap.alignment = .center
+                cap.frame = NSRect(x: x, y: y + 152, width: 150, height: 16)
+                root.addSubview(cap)
+                x += 170
+            }
+            y += 178
+        }
+
+        for l in links {
+            let b = NSButton(title: l["label"] ?? "", target: self, action: #selector(openLink(_:)))
+            b.bezelStyle = .rounded
+            b.identifier = NSUserInterfaceItemIdentifier(l["url"] ?? "")
+            b.frame = NSRect(x: 24, y: y, width: width - 48, height: 30); y += 36
+            root.addSubview(b)
+        }
+
+        for c in coins {
+            let lab = NSTextField(labelWithString: c["label"] ?? "")
+            lab.font = .systemFont(ofSize: 11, weight: .medium)
+            lab.frame = NSRect(x: 24, y: y, width: width - 48, height: 15); y += 17
+            root.addSubview(lab)
+            let addr = NSTextField(labelWithString: c["address"] ?? "")
+            addr.font = .monospacedSystemFont(ofSize: 10, weight: .regular)
+            addr.textColor = .secondaryLabelColor
+            addr.isSelectable = true
+            addr.frame = NSRect(x: 24, y: y, width: width - 110, height: 16)
+            root.addSubview(addr)
+            let copy = NSButton(title: T("copyAddr"), target: self, action: #selector(copyAddr(_:)))
+            copy.bezelStyle = .rounded
+            copy.controlSize = .small
+            copy.identifier = NSUserInterfaceItemIdentifier(c["address"] ?? "")
+            copy.frame = NSRect(x: width - 80, y: y - 3, width: 56, height: 22)
+            root.addSubview(copy)
+            y += 24
+        }
+
+        let page = NSButton(title: T("openPage"), target: self, action: #selector(openPage))
+        page.bezelStyle = .rounded
+        page.frame = NSRect(x: 24, y: y + 6, width: width - 48, height: 30); y += 48
+        root.addSubview(page)
+
+        root.frame = NSRect(x: 0, y: 0, width: width, height: y)
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: y),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Fanctl"
+        w.isReleasedWhenClosed = false
+        w.contentView = root
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window = w
+    }
+
+    @objc private func openLink(_ s: NSButton) {
+        if let u = s.identifier?.rawValue, let url = URL(string: u) { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func copyAddr(_ s: NSButton) {
+        guard let a = s.identifier?.rawValue else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(a, forType: .string)
+        s.title = T("copied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { s.title = T("copyAddr") }
+    }
+
+    @objc private func openPage() {
+        let p = config()["page"] as? String ?? "https://github.com/TomEageer/fanctl"
+        if let url = URL(string: p) { NSWorkspace.shared.open(url) }
+    }
+}
+
 // MARK: - 应用主体
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -1193,6 +1331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(updItem)
         let fbItem = makeItem("✉️ " + T("feedback"), #selector(openFeedback))
         menu.addItem(fbItem)
+        menu.addItem(makeItem("❤️ " + T("donate"), #selector(openDonate)))
         menu.addItem(makeItem("🗑️ " + T("uninstall"), #selector(uninstallApp)))
         menu.addItem(.separator())
         menu.addItem(makeItem(T("quit"), #selector(quit)))
@@ -1229,6 +1368,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let upd = NSMenuItem(title: T("checkUpdate"), action: #selector(menuCheckUpdate), keyEquivalent: "")
         upd.target = self
         appMenu.addItem(upd)
+        let don = NSMenuItem(title: T("donate"), action: #selector(openDonate), keyEquivalent: "")
+        don.target = self
+        appMenu.addItem(don)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: T("quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -1292,6 +1434,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.arguments = ["-c", "sleep 1; open -n '\(Bundle.main.bundlePath)'"]
         try? p.run()
         NSApp.terminate(nil)
+    }
+
+    @objc func openDonate() {
+        if DonateController.shared == nil { DonateController.shared = DonateController() }
+        DonateController.shared?.show()
     }
 
     @objc func uninstallApp() {

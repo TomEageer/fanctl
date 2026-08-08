@@ -2,6 +2,13 @@
 
 **[中文文档 / Chinese README](README.zh-CN.md)**
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Download](https://img.shields.io/badge/download-1%20MB-brightgreen)](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip)
+[![Installed](https://img.shields.io/badge/installed-2.4%20MB-brightgreen)](https://github.com/TomEageer/fanctl/releases)
+[![Idle CPU](https://img.shields.io/badge/idle%20CPU-~0.2%25-brightgreen)](#footprint)
+[![Telemetry](https://img.shields.io/badge/telemetry-none-success)](#privacy)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-success)](#footprint)
+
 Open-source fan speed control for Apple Silicon MacBooks (M1 / M2 / M3 / M4 / M4 Pro / M4 Max). Keeps your Mac cool and quiet with a self-learning thermal controller — a free alternative to Macs Fan Control and TG Pro.
 
 ![Fanctl menu bar](docs/images/menubar.png)
@@ -75,6 +82,37 @@ Every exit path restores system fan control first; targets are clamped to the ha
 
 **Macs Fan Control / TG Pro alternative?**
 Fanctl is free, open-source (MIT), has no subscription, no menu-bar meters burning CPU, and adds closed-loop temperature control with a learning feedforward — not just manual sliders and static curves.
+
+## Footprint
+
+Lightweight by measurement, not by claim (numbers from the developer's M4 Pro):
+
+| | |
+|---|---|
+| Download | **1.0 MB** (zip) |
+| Installed | **2.4 MB** (app bundle, everything included) |
+| Background daemon | **~9 MB** RAM, **0.2 %** CPU idle |
+| Menu bar app | **38 MB** memory footprint, **~0.2 %** CPU with the menu closed |
+| Source | ~2,600 lines total across C, Python and Swift |
+| Third-party runtime dependencies | **none** (bundles only [macmon](https://github.com/vladkens/macmon) for sensors) |
+
+The UI is deliberately written to avoid repainting when nothing changed — assigning
+identical text to a menu item still forces macOS to re-blur the whole translucent
+backdrop, which is exactly how fan/temperature utilities end up burning CPU.
+
+## Privacy
+
+- **No telemetry, no analytics, no accounts, no data collection of any kind.**
+- The only network access is an update check against the GitHub Releases API,
+  plus the download itself if you choose to update.
+- Everything runs locally; the daemon writes only to `/usr/local/var/fanctl`
+  and `/var/log/fanctl.log`.
+- Fully open source (MIT) — the privileged daemon is ~700 lines of readable
+  Python and the SMC tool is ~200 lines of C, both auditable in a single sitting.
+
+## Support
+
+If Fanctl helps, see [DONATE.md](DONATE.md). Everything stays free regardless.
 
 ## Requirements
 
