@@ -246,6 +246,15 @@ func modeName(_ mode: String, rpm: Double, profile: String = "balanced") -> Stri
     }
 }
 
+extension NSMenuItem {
+    /// 仅在文本真正变化时赋值：菜单项标脏会导致 macOS 重算整块毛玻璃背景
+    func setTitleIfChanged(_ s: String) { if title != s { title = s } }
+}
+
+extension NSTextField {
+    func setStringIfChanged(_ s: String) { if stringValue != s { stringValue = s } }
+}
+
 func errText(_ code: String) -> String {
     switch code {
     case "fan_control_locked": return T("errLocked")
@@ -281,18 +290,19 @@ final class ChartView: NSView {
     @objc func windowChanged(_ s: NSSegmentedControl) {
         windowSec = windowOptions[s.selectedSegment].1
         UserDefaults.standard.set(Int(windowSec), forKey: "chartWindow")
+        lastSignature = ""
         reload()
     }
 
-    func reload() {
-        guard let raw = try? String(contentsOfFile: historyPath, encoding: .utf8) else {
-            samples = []; needsDisplay = true; return
-        }
-        let cutoff = Date().timeIntervalSince1970 - windowSec
-        samples = raw.split(separator: "\n").suffix(4800).compactMap { line in
+    private var cache: [Sample] = []
+    private var cacheOffset: UInt64 = 0
+    private var lastSignature = ""
+
+    private func parse(_ text: Substring) -> [Sample] {
+        text.split(separator: "\n").compactMap { line in
             guard let d = line.data(using: .utf8),
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                  let ts = (o["ts"] as? NSNumber)?.doubleValue, ts >= cutoff,
+                  let ts = (o["ts"] as? NSNumber)?.doubleValue,
                   let t  = (o["temp"] as? NSNumber)?.doubleValue, t > 1 else { return nil }
             return Sample(ts: ts, temp: t,
                           rpm: (o["rpm"] as? NSNumber)?.doubleValue,
@@ -300,6 +310,32 @@ final class ChartView: NSView {
                           mode: o["mode"] as? String ?? "auto",
                           pf: o["pf"] as? String ?? "balanced")
         }
+    }
+
+    /// 增量读取：只解析自上次以来新增的字节；文件被修剪（变小）时才全量重读。
+    /// 视图不可见时直接返回：置 needsDisplay 会让系统重算整块毛玻璃背景，代价极高。
+    func reload() {
+        guard let win = window, win.isVisible, win.occlusionState.contains(.visible) else { return }
+        let fm = FileManager.default
+        let size = ((try? fm.attributesOfItem(atPath: historyPath))?[.size] as? NSNumber)?.uint64Value ?? 0
+        if size < cacheOffset { cache = []; cacheOffset = 0 }
+        if size > cacheOffset, let fh = FileHandle(forReadingAtPath: historyPath) {
+            defer { try? fh.close() }
+            try? fh.seek(toOffset: cacheOffset)
+            if let data = try? fh.readToEnd(), let text = String(data: data, encoding: .utf8) {
+                // 末行可能只写了一半，留到下次再解析
+                if let lastNL = text.lastIndex(of: "\n") {
+                    cache += parse(text[text.startIndex..<lastNL])
+                    cacheOffset += UInt64(text[text.startIndex...lastNL].utf8.count)
+                }
+            }
+        }
+        if cache.count > 6000 { cache.removeFirst(cache.count - 4800) }
+        let sig = "\(cache.count)-\(cache.last?.ts ?? 0)-\(windowSec)"
+        if sig == lastSignature { return }        // 无新样本：不重绘，避免整块毛玻璃重算
+        lastSignature = sig
+        let cutoff = Date().timeIntervalSince1970 - windowSec
+        samples = cache.filter { $0.ts >= cutoff }
         // 时间戳必须单调：并发写入/文件修剪可能造成乱序，排序去重后再绘制，
         // 否则样条会出现"向后回勾"的非物理曲线
         samples.sort { $0.ts < $1.ts }
@@ -786,9 +822,12 @@ final class PanelController: NSObject, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer?.invalidate()
+        timer = nil
         timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            self?.refresh()
-            self?.chart.reload()
+            guard let self, self.window.isVisible,
+                  self.window.occlusionState.contains(.visible) else { return }
+            self.refresh()
+            self.chart.reload()
         }
         RunLoop.main.add(timer!, forMode: .common)
     }
@@ -852,11 +891,11 @@ final class PanelController: NSObject, NSWindowDelegate {
         let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
         let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
         let mode  = j["mode"] as? String ?? "?"
-        tempBig.stringValue = tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData")
+        tempBig.setStringIfChanged(tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
         let profNow = j["profile"] as? String ?? "balanced"
-        subLine.stringValue = (powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
+        subLine.setStringIfChanged((powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
             + modeName(mode, rpm: rpm, profile: profNow)
-            + ((j["err"] as? String).map { "  ⚠️ " + errText($0) } ?? "")
+            + ((j["err"] as? String).map { "  ⚠️ " + errText($0) } ?? ""))
         for item in smartPop.itemArray.dropFirst() {
             item.state = ((item.representedObject as? String) == profNow) ? .on : .off
         }
@@ -864,7 +903,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             speed.actual = act > 0 ? act : fanMin
             speed.setpoint = (mode == "custom") ? rpm : nil
             speed.needsDisplay = true
-            speedLabel.stringValue = (j["act"] as? NSNumber).map { "\($0.intValue) RPM" } ?? T("noData")
+            speedLabel.setStringIfChanged((j["act"] as? NSNumber).map { "\($0.intValue) RPM" } ?? T("noData"))
         }
     }
 }
@@ -1160,7 +1199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
 
         refresh()
-        slowTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
+        slowTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            self?.refresh()          // 只更新菜单栏文本；内容不变时 setBarText 会跳过重绘
+        }
         RunLoop.main.add(slowTimer!, forMode: .common)
 
         buildMainMenu()
@@ -1311,11 +1352,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func installService() { promptInstall(firstRun: !FileManager.default.fileExists(atPath: daemonPlist)) }
 
     func menuWillOpen(_ menu: NSMenu) {
+        guard menu === item.menu else { return }     // 子菜单不参与
+        fastTimer?.invalidate()                      // 关键：旧定时器必须先销毁
+        fastTimer = nil
         refresh()
         chart.reload()
         fastTicks = 0
         fastTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self else { return }
+            guard let self, self.chart.window?.isVisible == true else { return }
             self.refresh()
             self.fastTicks += 1
             if self.fastTicks % 3 == 0 { self.chart.reload() }
@@ -1324,6 +1368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        guard menu === item.menu else { return }
         fastTimer?.invalidate()
         fastTimer = nil
     }
@@ -1364,13 +1409,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let temp = tempOpt ?? 0, power = powerOpt ?? 0
 
         setBarText(temp: temp, power: power, stale: stale)
-        tempRow.title  = T("cpuTemp") + "　" + (tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
-            + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : "")
-        powerRow.title = T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData"))
-        if let e = j["err"] as? String { modeRow.title = "⚠️ " + errText(e) }
+        tempRow.setTitleIfChanged(T("cpuTemp") + "　" + (tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
+            + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : ""))
+        powerRow.setTitleIfChanged(T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData")))
+        if let e = j["err"] as? String { modeRow.setTitleIfChanged("⚠️ " + errText(e)) }
         let profNow0 = j["profile"] as? String ?? "balanced"
         if j["err"] == nil || j["err"] is NSNull {
-            modeRow.title = "\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0)
+            modeRow.setTitleIfChanged("\(T("runMode"))　" + modeName(mode, rpm: rpm, profile: profNow0))
         }
 
         smartItem.state = (mode == "manual" || mode == "auto") ? .on : .off
@@ -1385,9 +1430,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             speedControl.isEnabled = (mode != "battery")
             speedControl.needsDisplay = true
             if let a = actOpt, mode == "custom", abs(a - rpm) > 150 {
-                speedLabel.stringValue = "\(T("rpm"))　\(Int(a)) → \(Int(rpm)) RPM"
+                speedLabel.setStringIfChanged("\(T("rpm"))　\(Int(a)) → \(Int(rpm)) RPM")
             } else {
-                speedLabel.stringValue = "\(T("rpm"))　" + (actOpt.map { "\(Int($0)) RPM" } ?? T("noData"))
+                speedLabel.setStringIfChanged("\(T("rpm"))　" + (actOpt.map { "\(Int($0)) RPM" } ?? T("noData")))
             }
         }
     }
