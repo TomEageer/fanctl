@@ -68,12 +68,14 @@ SMC_BACKOFF_MAX = 180.0
 
 # 调速性格：quiet 有噪音天花板 / balanced 压住上升徐徐落温 / cool 尽快压下再回落保持
 PROFILES = {
+    # ff_margin: 前馈的温度裕度——温度低于 (目标−裕度) 时前馈完全不发力，
+    #            越接近目标越放开。避免"功耗高但温度压得住"时无谓地冲高转速。
     "quiet":    dict(target=58.0, kp=45.0,  ki=4.0, kd=200.0, up=(100.0, 200.0, 350.0),
-                     down=100.0, spike=25.0, ff_scale=0.70, cap_frac=0.75),
+                     down=100.0, spike=25.0, ff_scale=0.70, cap_frac=0.75, ff_margin=10.0),
     "balanced": dict(target=55.0, kp=70.0,  ki=6.0, kd=300.0, up=(150.0, 300.0, 500.0),
-                     down=120.0, spike=45.0, ff_scale=1.00, cap_frac=1.00),
+                     down=120.0, spike=45.0, ff_scale=1.00, cap_frac=1.00, ff_margin=8.0),
     "cool":     dict(target=48.0, kp=130.0, ki=8.0, kd=450.0, up=(300.0, 500.0, 800.0),
-                     down=150.0, spike=60.0, ff_scale=1.25, cap_frac=1.00),
+                     down=150.0, spike=60.0, ff_scale=1.25, cap_frac=1.00, ff_margin=5.0),
 }
 
 state = {
@@ -720,10 +722,23 @@ def control_tick(temp):
             tm_fit()
             state["model_dirty"] = True
 
+    # 前馈需求调制：整机功耗里有相当部分（屏幕/外设/充电损耗）并不进散热片，
+    # 纯按瓦数拉转速会系统性过冲。温度距目标越远、且没有上升趋势，前馈越收敛；
+    # 逼近目标或正在爬升时才完全放开——"压得住就不必吼"。
+    margin = p["ff_margin"]
+    demand = (temp - (p["target"] - margin)) / margin
+    if state["trend"] > 0.05:                 # 正在明显爬升：提前放开，保留预判能力
+        demand += min(0.5, state["trend"] * 4.0)
+    demand = max(0.0, min(1.0, demand))
+    state["ff_demand"] = demand
+    ff_full = fan_min + max(0.0, state["w_ff"] - 8.0) * ff_gain() * p["ff_scale"]
+    ff = fan_min + (ff_full - fan_min) * demand
+
     # 稳态自学习：把积分携带的常差按当前性格迁进前馈增益（精确回代，保持指令连续）
     state["temps"] = (state["temps"] + [temp])[-8:]
     if (len(state["temps"]) == 8 and max(state["temps"]) - min(state["temps"]) < 0.8
-            and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10):
+            and fan_min + 60 < state["rpm"] < fan_max - 60 and state["w_ff"] > 10
+            and demand > 0.8):
         base = max(state["w_ff"] - 8.0, 2.0)
         old = ff_gain()
         new = max(FF_GAIN_MIN, min(FF_GAIN_MAX, old + LEARN_RATE * state["integ"] / base))
@@ -733,7 +748,6 @@ def control_tick(temp):
             state["model_dirty"] = True
     save_model()
 
-    ff = fan_min + max(0.0, state["w_ff"] - 8.0) * ff_gain() * p["ff_scale"]
     cmd_raw = ff + spike + damp + p["kp"] * err + state["integ"]
 
     # 抗饱和反算：输出钳位与斜率限幅都是饱和环节，两者都要泄积分
@@ -745,8 +759,12 @@ def control_tick(temp):
     cmd = max(fan_min, min(ceil, cmd_raw))
 
     rate_up = p["up"][2] if err > 15 else p["up"][1] if err > 5 else p["up"][0]
+    # 降速斜率随"温度低于目标的富余量"放宽：温度已经压得很低还维持高转速纯属噪音，
+    # 但仍保持缓坡（最多 2.5 倍），不出现突然的转速跳水。
+    slack = max(0.0, (p["target"] - temp - 3.0) / 5.0)
+    rate_down = p["down"] * (1.0 + min(1.5, slack))
     raw_delta = cmd - state["rpm"]
-    delta = max(-p["down"], min(rate_up, raw_delta))
+    delta = max(-rate_down, min(rate_up, raw_delta))
     if raw_delta != delta:
         state["integ"] -= 0.06 * (raw_delta - delta)
     state["rpm"] += delta
@@ -763,8 +781,8 @@ def control_tick(temp):
 
     if abs(state["rpm"] - state["written"]) >= WRITE_BAND:
         write_rpm(state["rpm"])
-        log("temp=%.1f w=%.0f ff=%d integ=%+d rpm=%d" %
-            (temp, state["w_ff"], ff, state["integ"], state["rpm"]))
+        log("temp=%.1f w=%.0f ff=%d(d%.2f) integ=%+d rpm=%d" %
+            (temp, state["w_ff"], ff, demand, state["integ"], state["rpm"]))
     write_status("manual")
 
 
