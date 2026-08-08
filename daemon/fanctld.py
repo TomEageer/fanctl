@@ -196,8 +196,11 @@ def set_auto(reason=""):
 
 
 def smc_backoff(reason):
-    """写入失败退避。持续失败通常源于睡眠唤醒后 SMC 把风扇键锁定（F0Md 读出异常值、
-    写入返回 -126），此状态无法由软件解除，重启可恢复；期间仍继续温度监控。"""
+    """写入失败退避。持续失败常见两类：①睡眠唤醒后 SMC 短时锁定风扇键（写入返回 -126）；
+    ②模式键 F0Md 短时间被高频翻转（如服务反复重启，每次重启=交还+接管各写一次）触发
+    SMC 保护态（F0Md 读出 3）。均无法由软件立即解除：前者稍候自动恢复，后者多为一两分钟
+    内自愈、持续过久需重启整机；期间仍继续温度监控。（2026-08-08 实证：整机两天未睡眠、
+    温度 52-55°C 时段照样出现 F0Md=3，与唤醒无关、与温度高低无关，与重启频率强相关）"""
     n = state["smc_fails"] = state.get("smc_fails", 0) + 1
     wait = min(SMC_BACKOFF_BASE * (2 ** (n - 1)), SMC_BACKOFF_MAX)
     state["smc_until"] = time.time() + wait
@@ -230,7 +233,8 @@ def write_rpm(rpm):
                         if time.time() - state["smc_first_fail"] > LOCK_ESCALATE
                         else "fan_control_yield")
         if n <= 2 or n % 20 == 0:
-            log("system holds fan control (F0Md override) — standing by")
+            log("system holds fan control (F0Md=%s) — standing by"
+                % read_fan_field("F0Md"))
         return False
     if r and r.returncode == 0:
         state["written"] = rpm
