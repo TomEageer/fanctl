@@ -215,6 +215,13 @@ def write_rpm(rpm):
     if not smc_ok():
         return False
     r = smcfan("set", str(int(rpm)))
+    if r and r.returncode == 3:              # 系统接管（F0Md 非 0/1）：不与之争抢
+        n = state["smc_fails"] = state.get("smc_fails", 0) + 1
+        state["smc_until"] = time.time() + min(SMC_BACKOFF_BASE * n, SMC_BACKOFF_MAX)
+        state["err"] = "fan_control_locked"
+        if n <= 2 or n % 20 == 0:
+            log("system holds fan control (F0Md override) — standing by")
+        return False
     if r and r.returncode == 0:
         state["written"] = rpm
         state["manual"] = True

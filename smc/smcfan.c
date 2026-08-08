@@ -138,9 +138,16 @@ static int cmd_set(float rpm) {
         float target = rpm;
         if (mx > 0 && target > mx) target = mx;      /* 永不超过硬件上限 */
         if (mn > 0 && target < mn) target = mn;      /* 永不低于硬件下限：手动模式没有比自动更低的余地 */
-        unsigned char one = 1;
+        /* 模式键只在需要改变时写：高频重复写 F%dMd 会把 SMC 顶进保护态
+           （读出 3 = 系统接管，此后所有写入被拒）。目标转速键可安全高频写。 */
         snprintf(k, 5, "F%dMd", i);
-        if (smc_write(k, &one, 1) != kIOReturnSuccess) { fprintf(stderr, "error: write %s failed (need root?)\n", k); return 1; }
+        int md = -1;
+        if (smc_read(k, &v) == kIOReturnSuccess) md = v.bytes[0];
+        if (md != 0 && md != 1) { fprintf(stderr, "error: %s=%d (system override)\n", k, md); return 3; }
+        if (md != 1) {
+            unsigned char one = 1;
+            if (smc_write(k, &one, 1) != kIOReturnSuccess) { fprintf(stderr, "error: write %s failed (need root?)\n", k); return 1; }
+        }
         snprintf(k, 5, "F%dTg", i);
         if (smc_write(k, (unsigned char *)&target, 4) != kIOReturnSuccess) { fprintf(stderr, "error: write %s failed\n", k); return 1; }
         printf("fan%d -> manual %.0f rpm\n", i, target);
@@ -152,8 +159,9 @@ static int cmd_auto(void) {
     int n = fan_count();
     int rc = 0;
     for (int i = 0; i < n; i++) {
-        char k[5]; unsigned char zero = 0;
+        char k[5]; unsigned char zero = 0; SMCVal_t v;
         snprintf(k, 5, "F%dMd", i);
+        if (smc_read(k, &v) == kIOReturnSuccess && v.bytes[0] == 0) { printf("fan%d already auto\n", i); continue; }
         if (smc_write(k, &zero, 1) != kIOReturnSuccess) { fprintf(stderr, "error: restore %s failed\n", k); rc = 1; }
         else printf("fan%d -> auto\n", i);
     }
@@ -167,6 +175,20 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[1], "probe") == 0) rc = cmd_probe();
     else if (strcmp(argv[1], "set") == 0 && argc == 3) rc = cmd_set((float)atof(argv[2]));
     else if (strcmp(argv[1], "auto") == 0) rc = cmd_auto();
+    else if (strcmp(argv[1], "poke") == 0 && argc == 4) {   /* 诊断用：写任意键 */
+        SMCVal_t cur;
+        if (smc_read(argv[2], &cur) != kIOReturnSuccess) { fprintf(stderr, "read %s failed\n", argv[2]); rc = 1; }
+        else {
+            double v = atof(argv[3]);
+            unsigned char buf[8] = {0};
+            unsigned int sz = cur.dataSize;
+            if (strcmp(cur.dataType, "flt ") == 0) { float f = (float)v; memcpy(buf, &f, 4); sz = 4; }
+            else if (sz == 1) buf[0] = (unsigned char)v;
+            else if (sz == 2) { buf[0] = ((int)v >> 8) & 0xff; buf[1] = (int)v & 0xff; }
+            rc = smc_write(argv[2], buf, sz) == kIOReturnSuccess ? 0 : 1;
+            printf("poke %s = %g -> %s\n", argv[2], v, rc == 0 ? "ok" : "FAILED");
+        }
+    }
     else if (strcmp(argv[1], "get") == 0 && argc == 3) {
         SMCVal_t v;
         if (smc_read(argv[2], &v) == kIOReturnSuccess) {
