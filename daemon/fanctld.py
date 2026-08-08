@@ -260,14 +260,40 @@ def write_rpm(rpm):
 
 # ---------------------------------------------------------------- 传感器
 
+CHARGE_HEAT_FRACTION = 0.1   # 充电功率中最终留在机内变成热的比例（转换损耗），其余存进电池
+
+
+def parse_battery_power(out):
+    """解析 ioreg AppleSmartBattery 文本 → (整机输入功率 W, 充电功率 W)。
+    Amperage 为有符号毫安（放电时以 64 位补码打印成大整数）。"""
+    m = re.search(r'"SystemPowerIn"\s*=\s*(\d+)', out)
+    sys_in = int(m.group(1)) / 1000.0 if m else None
+    ma = re.search(r'"Amperage"\s*=\s*(\d+)', out)
+    mv = re.search(r'"Voltage"\s*=\s*(\d+)', out)
+    charge = 0.0
+    if ma and mv:
+        amp = int(ma.group(1))
+        if amp >= 1 << 63:
+            amp -= 1 << 64
+        if amp > 50:                     # >50mA 才算在充电（滤噪声）
+            charge = amp * int(mv.group(1)) / 1e6
+    return sys_in, charge
+
+
 def read_power_watts():
+    """温控口径功耗：整机输入减去充电功率的入库部分。
+    SystemPowerIn 是适配器输入，含电池充电功率——那部分能量存进电池并不发热，
+    快充时高达 30W+，若按原值喂前馈会把充电当发热拉转速（2026-08-08 实锤：
+    插回电源后前馈被 62W 读数顶到满转，其中 ~32W 是充电）。"""
     try:
         out = subprocess.run([IOREG, "-rn", "AppleSmartBattery"],
                              capture_output=True, text=True, timeout=10).stdout
-        m = re.search(r'"SystemPowerIn"=(\d+)', out)
-        if m and int(m.group(1)) > 0:
-            state["watts_good"] = (int(m.group(1)) / 1000.0, time.time())
-            return state["watts_good"][0]
+        sys_in, charge = parse_battery_power(out)
+        state["charge_w"] = charge
+        if sys_in and sys_in > 0:
+            w = max(0.0, sys_in - charge * (1.0 - CHARGE_HEAT_FRACTION))
+            state["watts_good"] = (w, time.time())
+            return w
     except Exception:
         pass
     held = state["watts_good"]          # 遥测间歇失效：短时间沿用上次有效值
@@ -658,6 +684,9 @@ def write_status(mode):
             "tmSamples": int(state["tm"]["n"]), "tmNeed": TM_MIN_SAMPLES,
             "tmLearned": state["tm"]["k0"] is not None,
             "machine": state["machine"],
+            # 正在充电时报充电功率（W），UI 加 ⚡ 标注；不充为 null
+            "chargeW": (round(state["charge_w"], 1)
+                        if live and state.get("charge_w", 0.0) > 1.0 else None),
             "thermal": ({"k0": round(state["tm"]["k0"], 4),
                          "k1": round(state["tm"]["k1"], 4),
                          "tamb": round(state["tm"]["tamb"], 1),

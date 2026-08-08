@@ -985,7 +985,8 @@ final class PanelController: NSObject, NSWindowDelegate {
         let mode  = j["mode"] as? String ?? "?"
         tempBig.setStringIfChanged(tempOpt.map { tFmt($0) } ?? T("noData"))
         let profNow = j["profile"] as? String ?? "balanced"
-        subLine.setStringIfChanged((powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
+        let chargeSfx = (j["chargeW"] as? NSNumber).map { String(format: " ⚡%.0f W", $0.doubleValue) } ?? ""
+        subLine.setStringIfChanged((powerOpt.map { String(format: "%.1f W", $0) + chargeSfx + " · " } ?? "")
             + modeName(mode, rpm: rpm, profile: profNow)
             + ((j["err"] as? String).map { "  ⚠️ " + errText($0) } ?? ""))
         for item in smartPop.itemArray.dropFirst() {
@@ -1634,7 +1635,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setBarText(temp: temp, power: power, stale: stale)
         tempRow.setTitleIfChanged(T("cpuTemp") + "　" + (tempOpt.map { tFmt($0) } ?? T("noData"))
             + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : ""))
-        powerRow.setTitleIfChanged(T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData")))
+        powerRow.setTitleIfChanged(T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData"))
+            + ((j["chargeW"] as? NSNumber).map { String(format: "  ⚡ %.0f W", $0.doubleValue) } ?? ""))
         if let e = j["err"] as? String { modeRow.setTitleIfChanged("⚠️ " + errText(e)) }
         let profNow0 = j["profile"] as? String ?? "balanced"
         if j["err"] == nil || j["err"] is NSNull {
