@@ -14,6 +14,7 @@
 [![Release](https://img.shields.io/github/v/release/TomEageer/fanctl?color=brightgreen&label=release)](https://github.com/TomEageer/fanctl/releases/latest)
 [![Download](https://img.shields.io/badge/下载-1%20MB-brightgreen)](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip)
 [![Idle CPU](https://img.shields.io/badge/空闲%20CPU-~0.2%25-brightgreen)](#资源占用)
+[![Downloads](https://img.shields.io/github/downloads/TomEageer/fanctl/total?color=brightgreen&label=下载量)](https://github.com/TomEageer/fanctl/releases)
 [![Telemetry](https://img.shields.io/badge/遥测-无-success)](#隐私)
 [![Platform](https://img.shields.io/badge/平台-Apple%20Silicon%20·%20macOS%2013%2B-lightgrey)](#系统要求)
 
@@ -34,6 +35,15 @@
 - 🌊 **滑行，不嚎叫** — PI 反馈收敛到刚好的平衡转速，变速限幅让每次调整都在耳朵的雷达之下
 - 🍃 **用电池时主动让位** — 释放控制并完全停止采样，零电池开销
 - 🆓 **免费开源** — MIT 协议，没有 Pro 版、没有订阅，全部约 2,600 行代码一次就能读完
+
+用真实数据看效果——3 分钟 10 线程满负载，直接取自 daemon 自己的 3 秒粒度遥测：
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/load-response-zh-dark.svg">
+  <img src="docs/images/load-response-zh-light.svg" width="880" alt="M4 Pro 实测：整机功耗阶跃上升，功耗前馈让风扇 6 秒内响应，满载 CPU 峰值 65 °C，卸载 17 秒后回到 55 °C 目标以下">
+</picture>
+
+功耗一跳 → 风扇 **6 秒**响应（芯片还没热）→ 满载全程温度可控 → 卸载 **17 秒**回到 55 °C 目标以下 → 转速滑落、控制交还系统（转速线在交还处如实断开）。
 
 |  | Fanctl | Macs Fan Control | TG Pro |
 |---|---|---|---|

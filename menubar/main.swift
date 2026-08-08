@@ -356,7 +356,7 @@ final class ChartView: NSView {
     private var cacheOffset: UInt64 = 0
     private var lastSignature = ""
 
-    func forceRedraw() { lastSignature = ""; reload(); needsDisplay = true }
+    func forceRedraw() { lastSignature = ""; reload(force: true); needsDisplay = true }
 
     private func parse(_ text: Substring) -> [Sample] {
         text.split(separator: "\n").compactMap { line in
@@ -374,8 +374,13 @@ final class ChartView: NSView {
 
     /// 增量读取：只解析自上次以来新增的字节；文件被修剪（变小）时才全量重读。
     /// 视图不可见时直接返回：置 needsDisplay 会让系统重算整块毛玻璃背景，代价极高。
-    func reload() {
-        guard let win = window, win.isVisible, win.occlusionState.contains(.visible) else { return }
+    /// force：menuWillOpen 等"窗口即将可见"的时点必须传 true——那一刻 window 还是
+    /// nil/不可见，普通守卫会把这次刷新变成静默空操作，首帧就会画出上次打开的旧缓存
+    /// （曲线挤在左侧、右侧空一截，直到 6s 后 fastTimer 才追上）。
+    func reload(force: Bool = false) {
+        if !force {
+            guard let win = window, win.isVisible, win.occlusionState.contains(.visible) else { return }
+        }
         let fm = FileManager.default
         let size = ((try? fm.attributesOfItem(atPath: historyPath))?[.size] as? NSNumber)?.uint64Value ?? 0
         if size < cacheOffset { cache = []; cacheOffset = 0 }
@@ -897,7 +902,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     func show() {
         syncChecks()
         refresh()
-        chart.reload()
+        chart.reload(force: true)   // 窗口即将显示，同 menuWillOpen
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         timer?.invalidate()
@@ -1574,7 +1579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fastTimer?.invalidate()                      // 关键：旧定时器必须先销毁
         fastTimer = nil
         refresh()
-        chart.reload()
+        chart.reload(force: true)   // 此刻菜单窗口尚未可见，必须绕过可见性守卫
         fastTicks = 0
         fastTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
             guard let self, self.chart.window?.isVisible == true else { return }

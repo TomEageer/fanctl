@@ -12,10 +12,12 @@ available as a git tag.
 
 **EN**
 - Celsius / Fahrenheit follows the system preference (2.5.0).
+- **Stale first frame fix** (2.5.2): opening the menu "suddenly" showed the history chart squeezed left with a blank right edge for a few seconds — `menuWillOpen` triggered a reload while the menu window was not yet visible, so the visibility guard silently swallowed it and the first frame drew the previous session's cache (switching the time window "fixed" it because that path forces a redraw). Explicit refresh points now bypass the guard. The README gains a real-data load-response chart (from the daemon's own 3-second telemetry, light/dark aware) and a downloads badge.
 - **Accurate takeover notice** (2.5.1): the warning shown when the SMC holds fan control claimed it "usually happens after wake" — log correlation against `pmset -g log` disproved that (takeovers occurred with no sleep for two days, at 52–55 °C, while manual control succeeded at the same temperatures minutes later). The real trigger is rapid `F0Md` mode-key flips, e.g. reinstalling the background service several times in a row. The notice is now short, cause-neutral, and no longer stretches the menu; the daemon logs the actual `F0Md` value on every rejection for future forensics.
 
 **中文**
 - 摄氏 / 华氏跟随系统偏好（2.5.0）。
+- **图表首帧陈旧修复**（2.5.2）：菜单"突然打开"的头几秒，历史曲线挤在左侧、右侧空一截——根因是 `menuWillOpen` 触发刷新时菜单窗口尚未可见，被 reload 的可见性守卫静默吞掉，首帧画的是上一次打开的旧缓存（切换时间窗因走 forceRedraw 而"恢复"）。显式刷新点改为绕过守卫。README 新增满负载实测响应图（daemon 3 秒遥测真实数据、深浅色自适应）与下载量徽章。
 - **接管提示修正**（2.5.1）：SMC 收回风扇控制时的警告原写着"通常发生在唤醒后"——与 `pmset -g log` 对照证伪（整机两天未睡眠、52–55°C 时段照样接管，且几分钟后同温度手动控制成功）。真实触发是 `F0Md` 模式键短时高频翻转（如连续多次重装后台服务）。提示改为简短、不预设归因的文案，不再撑宽菜单；daemon 在每次写入被拒时记录 `F0Md` 实际值，便于后续取证。
 
 ## 2.4 — Support & footprint · 赞赏与资源占用

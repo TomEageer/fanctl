@@ -14,6 +14,7 @@ pick **48 / 55 / 58 °C**, and a learning controller holds it. Quietly.
 [![Release](https://img.shields.io/github/v/release/TomEageer/fanctl?color=brightgreen&label=release)](https://github.com/TomEageer/fanctl/releases/latest)
 [![Download](https://img.shields.io/badge/download-1%20MB-brightgreen)](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip)
 [![Idle CPU](https://img.shields.io/badge/idle%20CPU-~0.2%25-brightgreen)](#footprint)
+[![Downloads](https://img.shields.io/github/downloads/TomEageer/fanctl/total?color=brightgreen&label=downloads)](https://github.com/TomEageer/fanctl/releases)
 [![Telemetry](https://img.shields.io/badge/telemetry-none-success)](#privacy)
 [![Platform](https://img.shields.io/badge/platform-Apple%20Silicon%20·%20macOS%2013%2B-lightgrey)](#requirements)
 
@@ -34,6 +35,15 @@ Fan utilities have existed for years. They give you a slider, or a static "at X 
 - 🌊 **Glides, never howls** — PI feedback converges on the exact equilibrium RPM and slew-rate limiting caps every change, so speed transitions stay below the ear's radar
 - 🍃 **Steps aside on battery** — releases control and stops sampling entirely; zero battery cost
 - 🆓 **Free and open source** — MIT, no Pro tier, no subscription, ~2,600 lines you can audit in one sitting
+
+Here is what that looks like on real data — a 3-minute 10-thread CPU burn, captured straight from the daemon's own 3-second telemetry:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/load-response-en-dark.svg">
+  <img src="docs/images/load-response-en-light.svg" width="880" alt="Real capture on M4 Pro: system power steps up, fans respond in 6 seconds via power feedforward, CPU temperature peaks at 65 °C under full load and returns below the 55 °C target 17 seconds after unload">
+</picture>
+
+Power steps up → fans respond in **6 s** (before the die warms) → temperature holds under full load → back below the 55 °C target **17 s** after the load ends → fans glide down and control is handed back to the system (the RPM line honestly ends where that happens).
 
 |  | Fanctl | Macs Fan Control | TG Pro |
 |---|---|---|---|
