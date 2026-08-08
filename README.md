@@ -112,7 +112,11 @@ backdrop, which is exactly how fan/temperature utilities end up burning CPU.
 
 ## Support
 
-If Fanctl helps, see [DONATE.md](DONATE.md). Everything stays free regardless.
+If Fanctl helps, see [DONATE.md](DONATE.md) — Alipay / WeChat / crypto. Everything stays free regardless.
+
+## Changelog
+
+Grouped by major version in [CHANGELOG.md](CHANGELOG.md); per-release notes on the [Releases page](https://github.com/TomEageer/fanctl/releases).
 
 ## Requirements
 

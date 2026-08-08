@@ -11,7 +11,7 @@ Fanctl 免费开源（MIT），没有广告、没有埋点、没有付费版。�
 
 | Method | Detail |
 |---|---|
-| **GitHub Sponsors** | *(pending setup)* — the button at the top of the repository |
+| **GitHub Sponsors** | *(pending setup)* |
 | **Ko-fi** | *(pending setup)* |
 | **Crypto** | see addresses below |
 
