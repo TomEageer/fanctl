@@ -1,105 +1,169 @@
-# Fanctl — Apple Silicon Mac 智能风扇控制
+<div align="center">
 
-**[English README](README.md)**
+<img src="assets/icon_1024.png" width="120" alt="Fanctl 图标">
 
-![Fanctl 菜单栏](docs/images/menubar-zh.png)
+# Fanctl
 
-Apple Silicon Mac 智能风扇温控套件 — 功耗前馈 + PI 反馈 + 温柔调速。
-Smart fan control for Apple Silicon Macs — power feedforward + PI feedback + gentle slew-rate limiting.
+**Apple Silicon Mac 的智能自学习风扇控制**
 
-macOS 默认的风扇曲线以静音优先，90°C 之前风扇几乎不使劲，机身常年温热。fanctl 把控温目标交还给你：默认把 CPU die 压在 **50°C** 附近，插电时机身摸起来接近常温。
+你的 MacBook 整天温温的，是因为苹果把风扇调校成了"静音优先"——<br>
+芯片不到 **90 °C** 风扇几乎不转。Fanctl 把温度目标还给你：<br>
+选定 **48 / 55 / 58 °C**，自学习控制器安静地帮你守住。
 
-## 特性
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/TomEageer/fanctl?color=brightgreen&label=release)](https://github.com/TomEageer/fanctl/releases/latest)
+[![Download](https://img.shields.io/badge/下载-1%20MB-brightgreen)](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip)
+[![Idle CPU](https://img.shields.io/badge/空闲%20CPU-~0.2%25-brightgreen)](#资源占用)
+[![Telemetry](https://img.shields.io/badge/遥测-无-success)](#隐私)
+[![Platform](https://img.shields.io/badge/平台-Apple%20Silicon%20·%20macOS%2013%2B-lightgrey)](#系统要求)
 
-- **功耗前馈**：整机功耗（≈发热量）实时映射基准转速——负载一来风扇先动身，不等温度爬升
-- **PI 自学习**：积分项自动收敛到"刚好压住当前发热量"的平衡转速，稳定不来回抖
-- **温柔调速**：转速每 3 秒最多变 200 rpm，升降都是缓坡，听不到突兀的呼啸起步
-- **摄氏 / 华氏自动切换**：跟随 macOS 温度单位偏好（系统设置 → 通用 → 语言与地区 → 温度），面板内也可手动指定
-- **离电不介入**：电池供电自动交还系统并停止采样，续航零损耗
-- **失效保护**：守护进程退出/崩溃/被杀，先恢复系统自动控制再走；转速永远钳在硬件许可区间
-- **低成本菜单栏**：收起 15 秒/展开 2 秒双档刷新、文本不变不重绘（对 Liquid Glass 渲染友好）、读状态文件不碰 SMC
-- **温度/转速历史曲线**：10 分~2 小时可选窗口，背景按控制模式着色（蓝=智能调速 / 橙=手动定速 / 灰=系统调度）
-- **双点转速控件**：实心点=实时转速，点/拖出橙色目标环=手动定速，可看着实时点温柔滑向目标
+[**⬇ 立即下载**](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip) · [快速上手](#快速上手) · [工作原理](#工作原理) · [常见问题](#常见问题) · [**English**](README.md)
 
-## 组成
+<img src="docs/images/menubar-zh.png" width="440" alt="Fanctl 菜单栏面板——温度历史、转速曲线与调速控件">
+
+</div>
+
+---
+
+## 为什么是 Fanctl
+
+风扇工具存在很多年了，它们给你一根滑杆、或一条"到 X 度转 Y 速"的静态曲线——然后**你**成了那个控制器，整天手动调。Fanctl 把回路闭上：
+
+- 🔮 **热量还没到，风扇先动** — 整机功耗 ≈ 发热量，功耗一跳（开始编译、加载本地大模型）转速立刻跟上，而不是等芯片热了才反应
+- 🧠 **越用越懂你这台机器** — 在稳态下实测"功耗→转速→散热"关系并持久化，跑得越久预测越准；两台 Mac 会学出两个不同的控制器
+- 🌊 **滑行，不嚎叫** — PI 反馈收敛到刚好的平衡转速，变速限幅让每次调整都在耳朵的雷达之下
+- 🍃 **用电池时主动让位** — 释放控制并完全停止采样，零电池开销
+- 🆓 **免费开源** — MIT 协议，没有 Pro 版、没有订阅，全部约 2,600 行代码一次就能读完
+
+|  | Fanctl | Macs Fan Control | TG Pro |
+|---|---|---|---|
+| 价格 | **免费（MIT）** | 基础免费 · Pro 收费 | 收费 |
+| 源码 | **开源** | 闭源 | 闭源 |
+| 控制模型 | **闭环 PI + 自学习功耗前馈** | 手动 + 传感器曲线 | 手动 + 规则 |
+| 温度升高前就响应 | **是——功耗前馈** | 否 | 否 |
+
+## 快速上手
+
+1. **[下载 Fanctl.zip](https://github.com/TomEageer/fanctl/releases/latest/download/Fanctl.zip)** 并解压
+2. 把 `Fanctl.app` 拖进 **应用程序**，首次 **右键 → 打开**（ad-hoc 签名）
+3. 按提示点 **安装** — 输一次管理员密码装好后台服务，之后开机自启
+4. 选一个模式：**安静**（58 °C，带转速硬上限）、**均衡**（55 °C）、**凉爽**（48 °C）
+
+所有组件都在包里——SMC 工具、控制守护进程、传感器读取用的 [macmon](https://github.com/vladkens/macmon)。不需要 Homebrew，不需要终端。
+
+<details>
+<summary><b>从源码构建</b></summary>
+
+```bash
+git clone https://github.com/TomEageer/fanctl.git && cd fanctl
+make
+sudo ./install.sh
+```
+
+卸载走菜单（**卸载 Fanctl…**）或 `sudo ./uninstall.sh` — 删除任何东西之前都会先把风扇交还给 macOS。
+
+</details>
+
+## 工作原理
+
+```
+功耗遥测 ────前馈──────┐
+                      ├─→ 目标转速 ──变速限幅──→ SMC 风扇寄存器
+温度 ──PI（抗积分饱和）─┘        ↑
+        └── 稳态学习持续更新前馈增益（持久化）
+```
+
+三个小程序，各司其职：
 
 | 组件 | 语言 | 职责 |
 |---|---|---|
-| `smcfan` | C | AppleSMC 风扇寄存器读写（探测/定速/交还自动） |
-| `fanctld` | Python | 温控守护进程（root，LaunchDaemon） |
-| `Fanctl.app` | Swift | 菜单栏：显示温度，下拉看转速/功耗/模式，可暂停/恢复/拉满 |
-| `fanctl` | Bash | 命令行入口 |
+| `smcfan` | C，约 200 行 | 读写 AppleSMC 风扇寄存器（`F0Md`/`F0Tg`）——与商业风扇工具同一条通道 |
+| `fanctld` | Python，约 700 行 | root LaunchDaemon，约 3 秒一轮控制循环 |
+| `Fanctl.app` | Swift | 菜单栏界面——只读 daemon 写出的状态文件，UI 与 SMC 永不抢锁 |
 
-进程间通过两个文件通信：`/tmp/fanctl-status.json`（守护进程每拍写出状态）与 `/tmp/fanctl-cmd`（动词白名单指令：`pause` / `resume` / `max`）。
+**安全是结构性的，不是口号**：每条退出路径都先恢复系统风扇控制；独立的开机恢复守护覆盖 SIGKILL / 内核崩溃 / 断电；目标转速永远钳制在风扇自身探测的上下限内；芯片内建的过热保护始终高于任何软件。可执行文件放在 root 所有、启动前校验属主的目录里；命令通道是严格动词白名单——从不碰 `/tmp`。
 
-## 依赖
+## 应用本体
 
-- Apple Silicon Mac（在 M4 Pro / macOS 26+ 上开发验证；风扇键位 `F%dMd`/`F%dTg` 为 M 系通用）
-- Xcode Command Line Tools（编译 C 与 Swift）
-- [macmon](https://github.com/vladkens/macmon)（温度传感器读取）：`brew install macmon`
+- 📊 **历史图表** — 温度 + 转速双曲线按控制模式着色，同轴叠加功耗曲线：产热量 vs 散热量
+- 🎛 **双点调速控件** — 实心点是实时转速，圆环是你的手动设定值
+- 🌡 **菜单栏温度** — 摄氏/华氏跟随系统偏好，可手动覆盖
+- 🗣 **8 种语言** — 简体中文、English、日本語、한국어、Español、Français、Deutsch、Русский
+- 🪟 **独立控制面板窗口** — 给隐藏菜单栏的人用
+- 🧊 **渲染友好** — 文本不变不重绘；给菜单项赋相同文本仍会标脏、逼 macOS 重算整块毛玻璃背景——风扇类工具烧 CPU 多半烧在这里，Fanctl 不会
 
-## 安装
+## 资源占用
 
-### 方式一：下载即用（推荐）
+轻量靠实测，不靠嘴（数据来自开发者的 M4 Pro）：
 
-1. 从 [Releases](https://github.com/TomEageer/fanctl/releases) 下载 `Fanctl-x.y.z.zip`，解压
-2. 把 `Fanctl.app` 拖进「应用程序」
-3. 首次打开：**右键 → 打开**（ad-hoc 签名，需手动放行一次）
-4. 按提示点「安装」，输入一次管理员密码——后台服务装好即生效，开机自启
+| | |
+|---|---|
+| 下载 | **1.0 MB** zip |
+| 安装后 | **2.4 MB** — App 包含全部组件 |
+| 后台守护 | **约 9 MB** 内存 · 空闲 **0.2%** CPU |
+| 菜单栏 App | **38 MB** · 菜单关闭时 **约 0.2%** CPU |
+| 运行时第三方依赖 | **无** |
 
-App 内置全部组件（smcfan / fanctld / macmon 副本），无需 Homebrew 与命令行。更新后台服务：菜单栏 →「安装 / 更新后台服务…」。
+## 隐私
 
-### 方式二：源码构建
+**无遥测、无统计、无账号。** 唯一的网络访问是向 GitHub Releases API 查询更新（以及你同意后的下载本身）。一切都在本地运行；daemon 只写 `/usr/local/var/fanctl` 和 `/var/log/fanctl.log`。
 
-```bash
-make
-sudo ./install.sh   # 或 make install
-```
+## 常见问题
 
-卸载（两种方式通用）：`sudo ./uninstall.sh`（会先把风扇交还系统）。
+<details>
+<summary><b>MacBook 很烫但风扇没声音，是坏了吗？</b></summary>
 
-## 使用
+没坏——那是苹果的设计。固件曲线静音优先，允许机身长期温热；芯片不接近 90 °C 风扇不会大转。这正是 Fanctl 要改变的行为。
 
-菜单栏点温度数字：看温度/转速/功耗/模式，或一键 暂停 / 恢复 / 拉满。
+</details>
 
-```bash
-fanctl status    # 状态一览
-fanctl pause     # 暂停温控（交还系统）
-fanctl resume    # 恢复智能温控
-fanctl max       # 风扇拉满
-fanctl log       # 最近日志
-fanctl stop/start
-```
+<details>
+<summary><b>能把 Mac 一直压在 50 °C 以下吗？</b></summary>
 
-## 调参
+轻负载可以。持续重负载（编译、本地大模型）下物理规律说了算：风冷即使满转也会稳定在 55–65 °C。Fanctl 诚实地守住平衡点，而不是永远满转嘶吼。
 
-旋钮都在 `daemon/fanctld.py` 顶部：
+</details>
 
-```python
-TARGET_TEMP  = 50.0   # 控温目标（想更凉快就调低，想更安静就调高）
-ENGAGE_TEMP  = 48.0   # 超过此温度接管
-RELEASE_TEMP = 43.0   # 低于此温度稳定 ~72s 后交还系统
-KP / KI               # PI 增益
-RATE_LIMIT   = 200.0  # 每拍最大转速变化（越小越温柔）
-```
+<details>
+<summary><b>费电池吗？</b></summary>
 
-改完 `sudo ./install.sh` 重装生效。
+不费——用电池时 Fanctl 释放风扇控制并完全停止采样。
 
-**物理预期管理**：风冷笔记本的散热阻力决定了——轻载（<20W）可稳在 45~52°C；持续重载（编译/推理）风扇顶格也只能压到 55~65°C，这不是软件能改变的。
+</details>
 
-## 安全设计
+<details>
+<summary><b>安全吗？</b></summary>
 
-- 任何退出路径（信号/异常/卸载）都先执行 `smcfan auto` 交还系统
-- 目标转速始终钳在 SMC 报告的 `F%dMn`~`F%dMx` 硬件区间内
-- 芯片自身的硬件过热保护（降频/强制风扇）优先级高于一切软件，fanctl 无法也不会绕过它
-- 指令文件只接受白名单动词；注意 `/tmp/fanctl-cmd` 本机任意用户可写（动词均无害，介意可改路径收紧权限）
+每条退出路径都先把风扇交还 macOS，目标转速钳制在硬件上下限内，芯片内建过热保护永远压过任何软件。只有一条规矩：别同时跑两个风扇控制器——Fanctl 和 Macs Fan Control 之类抢写 SMC 会把风扇接口顶进保护态（拒绝写入一两分钟）。
 
-## 已知问题
+</details>
 
-- **不要与 Macs Fan Control / TG Pro 等其他风扇软件同时运行**——两个控制器互相覆写指令，可能把 SMC 接口顶进临时保护状态（读数变 0、写入报 -126；停止争抢后自行恢复，重启必恢复）
-- 守护进程运行时，旁路直接 `smcfan probe` 可能读到 0（SMC 通道并发限制），以 `fanctl status`（读状态文件）为准
-- 菜单栏应用为 ad-hoc 签名（未做 Apple 公证）。从浏览器下载后系统会附加隔离标记，可能弹出"已损坏/不能与此版本 macOS 配合使用"的误导性提示，放行方式任选其一：右键 → 打开；或终端执行 `xattr -dr com.apple.quarantine /Applications/Fanctl.app`
+<details>
+<summary><b>为什么要输一次管理员密码？</b></summary>
 
-## License
+写 SMC 风扇寄存器需要 root。特权部分是约 700 行 Python 守护 + 约 200 行 C 工具——小到可以在信任它之前先读完。
 
-MIT
+</details>
+
+## 系统要求
+
+- Apple Silicon Mac（M1 → M4 全系），macOS 13+
+- 在 M4 Pro 上开发与测试；从源码构建需要 Xcode Command Line Tools
+
+## 赞赏
+
+如果 Fanctl 帮到了你，见 [DONATE.md](DONATE.md) — 支付宝 / 微信 / 加密货币。无论是否赞赏，所有功能永久免费。
+
+## 更新日志
+
+按大版本归纳在 [CHANGELOG.md](CHANGELOG.md)；单版详情见 [Releases 页面](https://github.com/TomEageer/fanctl/releases)。
+
+## 联系
+
+[GitHub Issues](https://github.com/TomEageer/fanctl/issues) · [tomeageer@gmail.com](mailto:tomeageer@gmail.com) · [tomeageer.com](https://tomeageer.com)
+
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)。捆绑 [macmon](https://github.com/vladkens/macmon)（MIT）用于传感器读取。
+
+<sub>Mac 风扇控制 · Apple Silicon 风扇转速 · M1 M2 M3 M4 风扇控制 · macOS 风扇曲线 · MacBook 过热 · SMC 风扇 · 菜单栏温度监控 · Macs Fan Control 替代 · TG Pro 替代</sub>
