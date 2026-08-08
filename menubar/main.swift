@@ -26,6 +26,32 @@ func dissipation(rpm: Double, temp: Double) -> Double? {
 
 // MARK: - 本地化
 
+// 温度单位：默认跟随系统偏好（AppleTemperatureUnit，即"系统设置 → 语言与地区 → 温度"），
+// 未显式设置时按地区推断；用户也可在面板里手动指定。
+let tempUnitKey = "tempUnit"          // auto | c | f
+
+func useFahrenheit() -> Bool {
+    switch UserDefaults.standard.string(forKey: tempUnitKey) ?? "auto" {
+    case "f": return true
+    case "c": return false
+    default:
+        if let u = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleTemperatureUnit"] as? String {
+            return u == "Fahrenheit"
+        }
+        if #available(macOS 13.0, *) {
+            return Locale.current.measurementSystem == .us
+        }
+        return false
+    }
+}
+
+/// 摄氏值 → 显示单位数值
+func tDisp(_ c: Double) -> Double { useFahrenheit() ? c * 9 / 5 + 32 : c }
+func tUnit() -> String { useFahrenheit() ? "°F" : "°C" }
+func tFmt(_ c: Double, _ decimals: Int = 1) -> String {
+    String(format: "%.\(decimals)f %@", tDisp(c), tUnit())
+}
+
 let langOverrideKey = "uiLangOverride"
 let uiLang: String = {
     if let pick = UserDefaults.standard.string(forKey: langOverrideKey) { return pick }
@@ -101,6 +127,10 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "tempUnit":     ["en": "Temperature unit", "zh": "温度单位", "ja": "温度の単位", "ko": "온도 단위",
+                     "es": "Unidad de temperatura", "fr": "Unité de température", "de": "Temperatureinheit", "ru": "Единица температуры"],
+    "unitAuto":     ["en": "System", "zh": "跟随系统", "ja": "システムに従う", "ko": "시스템 설정",
+                     "es": "Sistema", "fr": "Système", "de": "System", "ru": "Как в системе"],
     "lgTemp":       ["en": "Temp", "zh": "温度", "ja": "温度", "ko": "온도",
                      "es": "Temp", "fr": "Temp", "de": "Temp", "ru": "Темп"],
     "lgCooling":    ["en": "Cooling", "zh": "散热", "ja": "放熱", "ko": "방열",
@@ -326,6 +356,8 @@ final class ChartView: NSView {
     private var cacheOffset: UInt64 = 0
     private var lastSignature = ""
 
+    func forceRedraw() { lastSignature = ""; reload(); needsDisplay = true }
+
     private func parse(_ text: Substring) -> [Sample] {
         text.split(separator: "\n").compactMap { line in
             guard let d = line.data(using: .utf8),
@@ -446,12 +478,18 @@ final class ChartView: NSView {
         }
 
         NSColor.separatorColor.setStroke()
-        for temp in stride(from: lo, through: hi, by: 10) {
+        // 网格线落在显示单位的整数刻度上（°F 每 20 度、°C 每 10 度），位置换算回摄氏
+        let step: Double = useFahrenheit() ? 20 : 10
+        let dLo = (tDisp(lo) / step).rounded(.up) * step
+        var dv = dLo
+        while dv <= tDisp(hi) {
+            let c = useFahrenheit() ? (dv - 32) * 5 / 9 : dv
             let g = NSBezierPath(); g.lineWidth = 0.5
-            g.move(to: NSPoint(x: plot.minX, y: pyT(temp)))
-            g.line(to: NSPoint(x: plot.maxX, y: pyT(temp)))
+            g.move(to: NSPoint(x: plot.minX, y: pyT(c)))
+            g.line(to: NSPoint(x: plot.maxX, y: pyT(c)))
             g.stroke()
-            drawText("\(Int(temp))°", at: NSPoint(x: 12, y: pyT(temp) - 5), size: 9, color: .secondaryLabelColor)
+            drawText("\(Int(dv))°", at: NSPoint(x: 8, y: pyT(c) - 5), size: 9, color: .secondaryLabelColor)
+            dv += step
         }
         if thermal != nil {
             for f in [0.0, 0.5, 1.0] {
@@ -707,6 +745,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     let speedLabel = NSTextField(labelWithString: "--")
     let speed = SpeedControlView(frame: NSRect(x: 24, y: 362, width: 340, height: 24))
     var smartPop: NSPopUpButton!
+    var unitSeg: NSSegmentedControl!
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
     let powerBox = NSButton(checkboxWithTitle: T("showPower"), target: nil, action: nil)
@@ -728,7 +767,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 686),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 716),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
@@ -736,7 +775,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if #available(macOS 11.0, *) { window.subtitle = "v\(appVersion)" }
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 686))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 716))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -793,6 +832,18 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(loginBox)
         root.addSubview(iconBox)
         root.addSubview(powerBox)
+        let unitLabel = NSTextField(labelWithString: "🌡 " + T("tempUnit"))
+        unitLabel.font = .systemFont(ofSize: 13)
+        unitLabel.frame = NSRect(x: 24, y: 554, width: 110, height: 20)
+        root.addSubview(unitLabel)
+        unitSeg = NSSegmentedControl(labels: [T("unitAuto"), "°C", "°F"],
+                                     trackingMode: .selectOne, target: self,
+                                     action: #selector(pickUnit(_:)))
+        unitSeg.frame = NSRect(x: 138, y: 550, width: 226, height: 26)
+        unitSeg.selectedSegment = ["auto", "c", "f"].firstIndex(
+            of: UserDefaults.standard.string(forKey: tempUnitKey) ?? "auto") ?? 0
+        root.addSubview(unitSeg)
+
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
         langLabel.frame = NSRect(x: 24, y: 554, width: 110, height: 20)
@@ -892,6 +943,14 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let code = sender.representedObject as? String { app?.writeCmd("profile \(code)") }
     }
 
+    @objc func pickUnit(_ sender: NSSegmentedControl) {
+        UserDefaults.standard.set(["auto", "c", "f"][sender.selectedSegment], forKey: tempUnitKey)
+        app?.lastTitle = ""            // 强制刷新菜单栏文本
+        app?.refresh()
+        refresh()
+        chart.forceRedraw()
+    }
+
     @objc func pickLangPopup(_ sender: NSPopUpButton) {
         app?.applyLanguage(sender.selectedItem?.representedObject as? String)
     }
@@ -919,7 +978,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let rpm   = (j["rpm"]   as? NSNumber)?.doubleValue ?? 0
         let act   = (j["act"]   as? NSNumber)?.doubleValue ?? rpm
         let mode  = j["mode"] as? String ?? "?"
-        tempBig.setStringIfChanged(tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
+        tempBig.setStringIfChanged(tempOpt.map { tFmt($0) } ?? T("noData"))
         let profNow = j["profile"] as? String ?? "balanced"
         subLine.setStringIfChanged((powerOpt.map { String(format: "%.1f W · ", $0) } ?? "")
             + modeName(mode, rpm: rpm, profile: profNow)
@@ -1568,7 +1627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let temp = tempOpt ?? 0, power = powerOpt ?? 0
 
         setBarText(temp: temp, power: power, stale: stale)
-        tempRow.setTitleIfChanged(T("cpuTemp") + "　" + (tempOpt.map { String(format: "%.1f °C", $0) } ?? T("noData"))
+        tempRow.setTitleIfChanged(T("cpuTemp") + "　" + (tempOpt.map { tFmt($0) } ?? T("noData"))
             + ((j["ts"] != nil && Date().timeIntervalSince1970 - ts > 90) ? T("stale") : ""))
         powerRow.setTitleIfChanged(T("sysPower") + "　" + (powerOpt.map { String(format: "%.1f W", $0) } ?? T("noData")))
         if let e = j["err"] as? String { modeRow.setTitleIfChanged("⚠️ " + errText(e)) }
@@ -1606,9 +1665,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if stale {
             key = "stale"
         } else if AppDelegate.showPowerInBar() && power > 0 {
-            key = "\(Int(temp.rounded()))|\(Int(power.rounded()))"
+            key = "\(Int(tDisp(temp).rounded()))|\(Int(power.rounded()))"
         } else {
-            key = "\(Int(temp.rounded()))"
+            key = "\(Int(tDisp(temp).rounded()))"
         }
         guard key != lastTitle else { return }
         lastTitle = key
@@ -1626,7 +1685,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pBot.maximumLineHeight = 9; pBot.minimumLineHeight = 9; pBot.alignment = .center
             let attr = NSMutableAttributedString()
             attr.append(NSAttributedString(
-                string: "\(Int(temp.rounded()))°\n",
+                string: "\(Int(tDisp(temp).rounded()))°\n",
                 attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
                              .paragraphStyle: pTop, .baselineOffset: -3]))
             attr.append(NSAttributedString(
@@ -1637,7 +1696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             btn.attributedTitle = attr
         } else {
             btn.attributedTitle = NSAttributedString()
-            btn.title = "\(Int(temp.rounded()))°"
+            btn.title = "\(Int(tDisp(temp).rounded()))°"
         }
     }
 

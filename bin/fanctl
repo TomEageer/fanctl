@@ -23,14 +23,17 @@ import json, sys, time
 d = json.load(open(sys.argv[1]))
 mode = {"manual": "智能调速", "auto": "智能调速·待命", "custom": "手动定速",
         "paused": "系统调度", "battery": "电池供电·系统调度",
-        "error": "错误", "degraded": "风扇控制被锁定(重启可恢复)"}.get(d["mode"], d["mode"])
+        "error": "错误", "waking": "唤醒后恢复中", "degraded": "系统暂时持有风扇控制"}.get(d["mode"], d["mode"])
 pf = {"quiet": "安静", "balanced": "均衡", "cool": "凉爽"}.get(d.get("profile"), "")
 t = "%.1f°C" % d["temp"] if d.get("temp") is not None else "—"
 w = "%.1fW" % d["power"] if d.get("power") is not None else "—"
 print("温度: %s   风扇: %s   功耗: %s   模式: %s%s%s" % (
     t, ("%d RPM" % d["act"]) if d.get("act") else "—", w, mode,
     " · " + pf if d["mode"] in ("manual", "auto") and pf else "",
-    "   [%s]" % d["err"] if d.get("err") else ""))
+    "   [%s]" % {"fan_control_yield": "稍后自动恢复",
+                 "fan_control_locked": "持续无法接管，建议重启",
+                 "fan_control_retry": "写入失败重试中"}.get(d.get("err"), d.get("err"))
+    if d.get("err") else ""))
 if time.time() - d.get("ts", 0) > 90:
     print("警告: 状态数据已过期，后台服务可能已停止")
 PY

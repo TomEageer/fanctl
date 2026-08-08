@@ -28,6 +28,7 @@ macOS's default fan curve is tuned for silence: fans barely spin until the chip 
 - **Three profiles** — Quiet (58 °C target, hard RPM ceiling — quiet means a noise ceiling, not just a warmer target), Balanced (55 °C), Cool (48 °C); each learns its own feedforward gain
 - **Menu bar app + control panel window** — temperature in the menu bar, a 2-series history chart (temperature + RPM, color-coded by control mode), a dual-dot speed control (solid dot = live RPM, ring = your manual setpoint), a power curve sharing the RPM axis (heat produced vs. heat removed), and a standalone window for people who hide their menu bar
 - **Localized UI** — English, 简体中文, 日本語, 한국어, Español, Français, Deutsch, Русский (follows system language)
+- **Celsius or Fahrenheit** — follows the macOS temperature preference (System Settings → General → Language & Region → Temperature), with a manual override in the panel
 - **Rendering-friendly** — 15 s refresh when closed, 2 s when open, text redraws only on change (plays nice with macOS Liquid Glass)
 
 ## Install

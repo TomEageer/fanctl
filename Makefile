@@ -1,4 +1,4 @@
-VERSION := 2.4.2
+VERSION := 2.5.0
 
 .PHONY: all install uninstall clean dist
 
