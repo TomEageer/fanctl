@@ -772,7 +772,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 716),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 388, height: 748),
                           styleMask: [.titled, .closable, .miniaturizable],
                           backing: .buffered, defer: false)
         super.init()
@@ -780,7 +780,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         if #available(macOS 11.0, *) { window.subtitle = "v\(appVersion)" }
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 716))
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 388, height: 748))
 
         tempBig.font = .monospacedDigitSystemFont(ofSize: 40, weight: .semibold)
         tempBig.frame = NSRect(x: 24, y: 16, width: 260, height: 48)
@@ -851,9 +851,9 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         let langLabel = NSTextField(labelWithString: "🌐 " + T("language"))
         langLabel.font = .systemFont(ofSize: 13)
-        langLabel.frame = NSRect(x: 24, y: 554, width: 110, height: 20)
+        langLabel.frame = NSRect(x: 24, y: 584, width: 110, height: 20)
         root.addSubview(langLabel)
-        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 550, width: 226, height: 26))
+        let pop = NSPopUpButton(frame: NSRect(x: 138, y: 580, width: 226, height: 26))
         let current = UserDefaults.standard.string(forKey: langOverrideKey)
         for (code, name) in langChoices {
             pop.addItem(withTitle: code == nil ? T("langSystem") : name)
@@ -865,7 +865,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         root.addSubview(pop)
 
         let hint = NSTextField(wrappingLabelWithString: T("hint"))
-        hint.frame = NSRect(x: 24, y: 582, width: 340, height: 44)
+        hint.frame = NSRect(x: 24, y: 612, width: 340, height: 44)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         root.addSubview(hint)
@@ -874,25 +874,25 @@ final class PanelController: NSObject, NSWindowDelegate {
         mail.isBordered = false
         mail.contentTintColor = .linkColor
         mail.font = .systemFont(ofSize: 11)
-        mail.frame = NSRect(x: 20, y: 630, width: 200, height: 18)
+        mail.frame = NSRect(x: 20, y: 662, width: 200, height: 18)
         let site = NSButton(title: "🌐 tomeageer.com", target: self, action: #selector(openSite))
         site.isBordered = false
         site.contentTintColor = .linkColor
         site.font = .systemFont(ofSize: 11)
-        site.frame = NSRect(x: 228, y: 630, width: 140, height: 18)
+        site.frame = NSRect(x: 228, y: 662, width: 140, height: 18)
         root.addSubview(mail)
         root.addSubview(site)
 
         let ver = NSTextField(labelWithString: "Fanctl v\(appVersion)")
         ver.font = .systemFont(ofSize: 11)
         ver.textColor = .tertiaryLabelColor
-        ver.frame = NSRect(x: 24, y: 656, width: 150, height: 16)
+        ver.frame = NSRect(x: 24, y: 688, width: 150, height: 16)
         root.addSubview(ver)
         let upd = NSButton(title: T("checkUpdate"), target: self, action: #selector(checkUpd))
         upd.isBordered = false
         upd.contentTintColor = .linkColor
         upd.font = .systemFont(ofSize: 11)
-        upd.frame = NSRect(x: 228, y: 654, width: 140, height: 18)
+        upd.frame = NSRect(x: 228, y: 686, width: 140, height: 18)
         root.addSubview(upd)
 
         window.contentView = root
