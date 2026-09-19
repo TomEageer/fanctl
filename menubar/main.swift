@@ -19,6 +19,8 @@ var ffGain = 110.0             // 由守护进程回填：每瓦发热需要多�
 // 本机热模型（守护进程在线辨识）：散热功率 = (k0 + k1·rpm/1000) × (温度 − 环境温度)
 struct ThermalModel { var k0: Double; var k1: Double; var tamb: Double; var n: Int }
 var thermal: ThermalModel? = nil
+var lowRangeOn = false          // 由守护进程状态回填
+var spinFloor = 1000.0
 func dissipation(rpm: Double, temp: Double) -> Double? {
     guard let m = thermal else { return nil }
     return max(0, (m.k0 + m.k1 * rpm / 1000) * (temp - m.tamb))
@@ -127,6 +129,22 @@ let L10N: [String: [String: String]] = [
                      "es": "Frío", "fr": "Frais", "de": "Kühl", "ru": "Прохладный"],
     "installDone":  ["en": "Background service installed and running.", "zh": "后台服务已安装并运行。", "ja": "バックグラウンドサービスをインストールし実行中です。", "ko": "백그라운드 서비스가 설치되어 실행 중입니다.",
                      "es": "Servicio instalado y en ejecución.", "fr": "Service installé et en cours d'exécution.", "de": "Dienst installiert und aktiv.", "ru": "Служба установлена и работает."],
+    "lowRange":     ["en": "Allow low speed and full stop (quieter)",
+                     "zh": "允许低转速与停转（更安静）",
+                     "ja": "低回転・停止を許可（より静か）",
+                     "ko": "저속 및 정지 허용(더 조용함)",
+                     "es": "Permitir baja velocidad y parada (más silencioso)",
+                     "fr": "Autoriser basse vitesse et arrêt (plus silencieux)",
+                     "de": "Niedrige Drehzahl und Stopp erlauben (leiser)",
+                     "ru": "Разрешить низкие обороты и остановку (тише)"],
+    "lowRangeHint": ["en": "Below the vendor minimum; only when temperature has margin and load is light. Fans return to normal range the moment it heats up.",
+                     "zh": "低于厂商标称最低转速；仅在温度有富余且负载轻时启用，一旦升温立即回到常规区间。",
+                     "ja": "メーカー公称の下限未満。温度に余裕があり負荷が軽いときのみ。昇温すれば直ちに通常域へ戻ります。",
+                     "ko": "제조사 최저 회전수 미만. 온도 여유가 있고 부하가 가벼울 때만 적용되며, 온도가 오르면 즉시 정상 범위로 복귀합니다.",
+                     "es": "Por debajo del mínimo del fabricante; solo con margen térmico y carga ligera. Vuelve al rango normal al calentarse.",
+                     "fr": "Sous le minimum constructeur ; uniquement avec marge thermique et charge légère. Retour immédiat à la plage normale en cas de chauffe.",
+                     "de": "Unter dem Herstellerminimum; nur bei Temperaturreserve und geringer Last. Bei Erwärmung sofort zurück in den Normalbereich.",
+                     "ru": "Ниже минимума производителя; только при запасе по температуре и низкой нагрузке. При нагреве сразу возврат в обычный диапазон."],
     "tempUnit":     ["en": "Temperature unit", "zh": "温度单位", "ja": "温度の単位", "ko": "온도 단위",
                      "es": "Unidad de temperatura", "fr": "Unité de température", "de": "Temperatureinheit", "ru": "Единица температуры"],
     "unitAuto":     ["en": "System", "zh": "跟随系统", "ja": "システムに従う", "ko": "시스템 설정",
@@ -683,12 +701,20 @@ final class SpeedControlView: NSView {
 
     private let inset: CGFloat = 16
 
+    private var lowEnd: Double { lowRangeOn ? 0 : fanMin }
+
     private func xFor(_ rpm: Double) -> CGFloat {
-        inset + CGFloat((min(max(rpm, fanMin), fanMax) - fanMin) / (fanMax - fanMin)) * (bounds.width - inset * 2)
+        let lo = lowEnd
+        return inset + CGFloat((min(max(rpm, lo), fanMax) - lo) / (fanMax - lo)) * (bounds.width - inset * 2)
     }
     private func rpmFor(_ x: CGFloat) -> Double {
+        let lo = lowEnd
         let f = Double((x - inset) / (bounds.width - inset * 2))
-        return fanMin + min(max(f, 0), 1) * (fanMax - fanMin)
+        var v = lo + min(max(f, 0), 1) * (fanMax - lo)
+        if lowRangeOn && v < spinFloor {          // 死区：只能停转或起转门限，不能停在中间
+            v = v < spinFloor * 0.6 ? 0 : spinFloor
+        }
+        return v
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -754,6 +780,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     let loginBox = NSButton(checkboxWithTitle: T("loginStart"), target: nil, action: nil)
     let iconBox  = NSButton(checkboxWithTitle: T("showIcon"), target: nil, action: nil)
     let powerBox = NSButton(checkboxWithTitle: T("showPower"), target: nil, action: nil)
+    let lowBox   = NSButton(checkboxWithTitle: T("lowRange"), target: nil, action: nil)
     var timer: Timer?
 
     private func sectionLabel(_ text: String, y: CGFloat) -> NSTextField {
@@ -834,9 +861,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         iconBox.target = self; iconBox.action = #selector(toggleIcon)
         powerBox.frame = NSRect(x: 24, y: 526, width: 340, height: 20)
         powerBox.target = self; powerBox.action = #selector(togglePower)
+        lowBox.frame = NSRect(x: 24, y: 550, width: 340, height: 20)
+        lowBox.target = self; lowBox.action = #selector(toggleLowRange)
+        let lowHint = NSTextField(wrappingLabelWithString: T("lowRangeHint"))
+        lowHint.font = .systemFont(ofSize: 11)
+        lowHint.textColor = .tertiaryLabelColor
+        lowHint.frame = NSRect(x: 42, y: 572, width: 322, height: 30)
         root.addSubview(loginBox)
         root.addSubview(iconBox)
         root.addSubview(powerBox)
+        root.addSubview(lowBox)
+        root.addSubview(lowHint)
         let unitLabel = NSTextField(labelWithString: "🌡 " + T("tempUnit"))
         unitLabel.font = .systemFont(ofSize: 13)
         unitLabel.frame = NSRect(x: 24, y: 554, width: 110, height: 20)
@@ -925,6 +960,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         loginBox.state = FileManager.default.fileExists(atPath: AppDelegate.agentPlistPath) ? .on : .off
         iconBox.state = AppDelegate.menuIconShown() ? .on : .off
         powerBox.state = AppDelegate.showPowerInBar() ? .on : .off
+        lowBox.state = lowRangeOn ? .on : .off
     }
 
     @objc func modeButton(_ sender: NSButton) {
@@ -932,6 +968,10 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     @objc func toggleLogin() { AppDelegate.setLaunchAtLogin(loginBox.state == .on) }
+
+    @objc func toggleLowRange() {
+        app?.writeCmd(lowBox.state == .on ? "lowrange on" : "lowrange off")
+    }
 
     @objc func toggleIcon() {
         UserDefaults.standard.set(iconBox.state == .on, forKey: "showMenuIcon")
@@ -1620,6 +1660,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let mode  = j["mode"] as? String ?? "?"
         let stale = Date().timeIntervalSince1970 - ts > 90 || tempOpt == nil
         if let g = (j["ffGain"] as? NSNumber)?.doubleValue, g > 1 { ffGain = g }
+        lowRangeOn = (j["lowRange"] as? NSNumber)?.boolValue ?? lowRangeOn
+        if let sf = (j["spinFloor"] as? NSNumber)?.doubleValue, sf > 0 { spinFloor = sf }
         if let tm = j["thermal"] as? [String: Any],
            let k0 = (tm["k0"] as? NSNumber)?.doubleValue,
            let k1 = (tm["k1"] as? NSNumber)?.doubleValue,

@@ -36,6 +36,20 @@ available as a git tag.
 - **图表首帧陈旧修复**（2.5.2）：菜单"突然打开"的头几秒，历史曲线挤在左侧、右侧空一截——根因是 `menuWillOpen` 触发刷新时菜单窗口尚未可见，被 reload 的可见性守卫静默吞掉，首帧画的是上一次打开的旧缓存（切换时间窗因走 forceRedraw 而"恢复"）。显式刷新点改为绕过守卫。README 新增满负载实测响应图（daemon 3 秒遥测真实数据、深浅色自适应）与下载量徽章。
 - **接管提示修正**（2.5.1）：SMC 收回风扇控制时的警告原写着"通常发生在唤醒后"——与 `pmset -g log` 对照证伪（整机两天未睡眠、52–55°C 时段照样接管，且几分钟后同温度手动控制成功）。真实触发是 `F0Md` 模式键短时高频翻转（如连续多次重装后台服务）。提示改为简短、不预设归因的文案，不再撑宽菜单；daemon 在每次写入被拒时记录 `F0Md` 实际值，便于后续取证。
 
+## 2.7 — Below the vendor minimum · 低于标称最低转速
+
+**EN**
+- The SMC's advertised minimum (2317 RPM on the developer's M4 Pro) is advisory, not enforced — measured: writing 1300/1800 tracks exactly, writing 0 stops both fans, and 800/1000 both settle at ~1050 RPM, the true physical spin floor. Fanctl can now use that range.
+- Opt-in setting **Allow low speed and full stop**. Entry is gated on thermal headroom (8 °C below target), no rising trend and light load; exit needs only 4 °C of margin, so any warmth returns the fans to the normal range at once.
+- The gap between 0 and the spin floor is a dead zone the fan cannot hold, so commands landing inside it snap to one end; stopping and starting bypass slew limiting, which has no physical meaning for a fan that is stationary.
+- With the setting on, the daemon keeps control instead of handing back at low temperature — macOS's own floor is the vendor minimum, so releasing would forfeit the whole feature.
+
+**中文**
+- SMC 标称的最低转速（本机 M4 Pro 为 2317）只是建议值、固件并不强制——实测写 1300/1800 精确跟随，写 0 两扇完全停转，写 800/1000 均稳在 ~1050（风扇真实的物理最低转速）。现在这段区间可用了。
+- 新增可选设置「允许低转速与停转」。进入需要温度低于目标 8°C、无上升趋势且负载轻；退出只需 4°C 裕度，一旦升温立即回到常规区间。
+- 0 与起转门限之间是风扇无法维持的死区，指令落入其中一律吸附到两端；停转与起转跳过斜率限制——对静止的风扇做限速没有物理意义。
+- 开启后守护进程在低温时不再交还系统：macOS 自身的下限就是厂商标称值，交还等于放弃该能力。
+
 ## 2.4 — Support & footprint · 赞赏与资源占用
 
 **EN**

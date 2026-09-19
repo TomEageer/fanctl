@@ -68,6 +68,18 @@ FF_DELTA_MAX = 12000.0
 # 先攒出数百转的负差才碰得到实际输出，振荡负载下永远攒不齐——表现为"温度已经
 # 压住、风扇仍钉在满转"。
 FF_HEADROOM = 600.0
+# 扩展低转速区间（低于厂商标称最低转速，含完全停转）。
+# 2026-09-19 实测（M4 Pro 14"，F0Mn 标称 2317）：固件并不强制该下限——
+#   写 1300 → 实际 1300；写 1800 → 1800（精确跟随）
+#   写 800 / 1000 → 均稳在 ~1050（风扇物理最低转速）
+#   写 0 → 两扇完全停转，轻载下温度不升反降
+# 因此 0 与 spin_floor 之间是死区：指令落在其中必须吸附到两端之一，
+# 否则风扇会在"停转/起转"之间反复抖动。进出低转区带迟滞，温度一回升立即退出。
+LOW_SPIN_FRAC = 0.45        # 物理最低转速估计 ≈ 标称最低 × 0.45（本机 2317→1042，实测 ~1050）
+LOW_SPIN_ABS = 700.0        # 估计值的绝对下限，防某些机型标称值过低
+LOW_MARGIN_ON = 8.0         # 温度低于「目标−此值」才允许进入低转区
+LOW_MARGIN_OFF = 4.0        # 温度回升到「目标−此值」立即退出（迟滞）
+LOW_POWER_MAX = 30.0        # 功耗高于此值不进低转区，留足散热余量
 RELEASE_HOLD = 24           # 连续 N 拍低温才交还系统（~72s）
 BATT_POLL = 30
 MODE_REASSERT = 20          # 每 N 拍回读一次 SMC 模式，防止被外部复位
@@ -101,6 +113,7 @@ state = {
     "profile": "balanced", "gains": {}, "model_dirty": False, "model_saved": 0.0,
     "fan_min": FAN_MIN_DEFAULT, "fan_max": FAN_MAX_DEFAULT, "fans": 0,
     "ticks": 0, "hist_n": 0, "watts_good": None, "tm": None, "machine": None,
+    "low_range": False, "in_low": False,
 }
 macmon_proc = None
 
@@ -528,6 +541,11 @@ def tm_required_rpm(watts, target):
 
 # ---------------------------------------------------------------- 模型持久化
 
+def spin_floor():
+    """风扇能维持旋转的最低转速估计；低于它只能是 0（停转）。"""
+    return max(LOW_SPIN_ABS, state["fan_min"] * LOW_SPIN_FRAC)
+
+
 def prof():
     return PROFILES[state["profile"]]
 
@@ -640,6 +658,8 @@ def load_model():
         state["gains"]["balanced"] = g
     if m.get("profile") in PROFILES:
         state["profile"] = m["profile"]
+    if isinstance(m.get("low_range"), bool):
+        state["low_range"] = m["low_range"]
     log("model loaded: profile=%s gains=%s" % (state["profile"], state["gains"]))
 
 
@@ -654,6 +674,7 @@ def save_model(force=False):
             "ffmap": {k: [round(x, 1) for x in v]
                       for k, v in state.get("ffmap", {}).items()},
             "profile": state["profile"], "updated": now, "machine": state["machine"],
+            "low_range": state["low_range"],
             "thermal": {"S": state["tm"]["S"], "b": state["tm"]["b"],
                         "syy": state["tm"]["syy"], "n": state["tm"]["n"],
                         "dim": TM_DIM}}))
@@ -677,6 +698,8 @@ def write_status(mode):
             "act": state["act"] if state["act"] > 0 else None,
             "profile": state["profile"],
             "fanMin": int(state["fan_min"]), "fanMax": int(state["fan_max"]),
+            "lowRange": state["low_range"], "inLow": state["in_low"],
+            "spinFloor": int(spin_floor()),
             "fans": state["fans"], "err": state["err"],
             # UI 用它把功耗折合成"守住当前目标温度所需的转速"，两线才可直接比较
             "ffGain": round(ff_gain() * prof()["ff_scale"], 1),
@@ -731,11 +754,12 @@ def read_command():
         os.unlink(CMD)
     except OSError:
         return None
-    if verb in ("pause", "resume", "max", "resetmodel"):
+    if verb in ("pause", "resume", "max", "resetmodel",
+                "lowrange on", "lowrange off"):
         return verb
     if verb.startswith("profile ") and verb.split()[1] in PROFILES:
         return verb
-    if re.fullmatch(r"set \d{3,5}", verb) or re.fullmatch(r"target \d{2}", verb):
+    if re.fullmatch(r"set \d{1,5}", verb) or re.fullmatch(r"target \d{2}", verb):
         return verb
     return None
 
@@ -752,6 +776,12 @@ def handle_command():
     elif verb == "resume":
         state["override"] = None
         log("override cleared, smart control resumed")
+    elif verb.startswith("lowrange "):
+        state["low_range"] = verb.endswith(" on")
+        state["in_low"] = False
+        state["model_dirty"] = True
+        save_model(force=True)
+        log("extended low range -> %s" % ("on" if state["low_range"] else "off"))
     elif verb == "resetmodel":
         state["gains"] = {}
         state["ffmap"] = {}
@@ -774,7 +804,10 @@ def handle_command():
             log("target -> %.0f°C (profile %s)" % (t, state["profile"]))
     else:                                # max / set <rpm> → 手动定速
         rpm = state["fan_max"] if verb == "max" else float(verb.split()[1])
-        rpm = max(state["fan_min"], min(state["fan_max"], rpm))
+        lo = 0.0 if state["low_range"] else state["fan_min"]
+        rpm = max(lo, min(state["fan_max"], rpm))
+        if state["low_range"] and 0 < rpm < spin_floor():      # 死区吸附
+            rpm = 0.0 if rpm < spin_floor() * 0.6 else spin_floor()
         state["override"] = "custom"
         state["rpm"] = rpm
         # 手动定速期间控制器状态清零，避免切回智能档时残留积分瞬间顶满
@@ -823,9 +856,11 @@ def control_tick(temp):
     p = prof()
 
     if not state["manual"]:
-        if temp >= p["target"] - 2.0:
+        # 开启低转区时必须始终接管：系统调度的下限就是标称最低转速（本机 2317），
+        # 交还系统等于放弃低转/停转能力——而低转区的价值恰恰全在低温时段。
+        if temp >= p["target"] - 2.0 or state["low_range"]:
             cur = read_fan_field("F0Ac") or fan_min
-            state["rpm"] = max(cur, fan_min)
+            state["rpm"] = max(cur, 0.0 if state["low_range"] else fan_min)
             state.update(integ=0.0, cool=0, trend=0.0, last_temp=temp)
             write_rpm(state["rpm"])
             log("temp=%.1f engage from %d rpm" % (temp, state["rpm"]))
@@ -887,8 +922,26 @@ def control_tick(temp):
         demand += min(0.5, state["trend"] * 4.0)
     demand = max(0.0, min(1.0, demand))
     state["ff_demand"] = demand
+    # 低转区判定：温度有足够富余、没有上升趋势、功耗不高时，才把下限放到 0。
+    # 迟滞：进入要 target−8，退出只要 target−4，避免在阈值附近反复停转/起转。
+    floor = fan_min
+    if state["low_range"]:
+        margin = LOW_MARGIN_OFF if state["in_low"] else LOW_MARGIN_ON
+        # 趋势门槛同样带迟滞：停转后温度自然回升是必然结果，若用进入时的严格门槛
+        # 去判定"是否继续停转"，会立刻被自己造成的回温踢出低转区，形成停/转振荡。
+        trend_gate = 0.15 if state["in_low"] else 0.02
+        if (temp < p["target"] - margin and state["trend"] <= trend_gate
+                and (watts or 0.0) < LOW_POWER_MAX):
+            floor = 0.0
+            state["in_low"] = True
+        else:
+            state["in_low"] = False
+    else:
+        state["in_low"] = False
+
+    # 前馈基线随下限一起下移，否则 PI 需要攒出 2000+ 转的负差才够得着低转区
     ff_full = fan_min + ff_delta(state["w_ff"]) * p["ff_scale"]
-    ff = fan_min + (ff_full - fan_min) * demand
+    ff = floor + (ff_full - fan_min) * demand
     ff = min(ff, fan_max - FF_HEADROOM)   # 结构性保险：前馈永不吃满，PI 始终有下调权威
 
     # 稳态自学习：把积分携带的常差迁进平衡转速映射的相邻锚点（精确回代，指令连续）。
@@ -911,9 +964,9 @@ def control_tick(temp):
     ceil = fan_min + (fan_max - fan_min) * p["cap_frac"]
     if cmd_raw > ceil:
         state["integ"] -= 0.06 * (cmd_raw - ceil)
-    elif cmd_raw < fan_min:
-        state["integ"] += 0.06 * (fan_min - cmd_raw)
-    cmd = max(fan_min, min(ceil, cmd_raw))
+    elif cmd_raw < floor:
+        state["integ"] += 0.06 * (floor - cmd_raw)
+    cmd = max(floor, min(ceil, cmd_raw))
 
     rate_up = p["up"][2] if err > 15 else p["up"][1] if err > 5 else p["up"][0]
     # 降速斜率随"温度低于目标的富余量"放宽：温度已经压得很低还维持高转速纯属噪音，
@@ -926,8 +979,20 @@ def control_tick(temp):
         state["integ"] -= 0.06 * (raw_delta - delta)
     state["rpm"] += delta
 
-    # 交还系统：温度足够低、且已降到最低档（避免高转速时误判交还造成温度反弹）
-    if temp < p["target"] - 9.0 and state["rpm"] <= fan_min + 100:
+    # 死区处理：0 与起转门限之间风扇无法稳定运行。停转与起转本身就是阶跃，
+    # 对其做斜率限制没有物理意义（且会让转速卡在死区中段被反复弹回），因此直接跳变。
+    sf = spin_floor()
+    if floor <= 0 and cmd <= sf * 0.6:
+        state["rpm"] = 0.0              # 指令要求停转 → 立即停（斜率限制对停转无意义）
+    elif 0 < state["rpm"] < sf:
+        # 死区不可驻留：无论指令从哪一侧带进来，风扇都跑不了这个转速，
+        # 一律抬到可维持的最低转速（起转本身也是阶跃）。
+        state["rpm"] = sf
+
+    # 交还系统：温度足够低、且已降到最低档（避免高转速时误判交还造成温度反弹）。
+    # 低转区内不交还——此时保持低转/停转正是用户要的效果，交还只会被系统拉回标称最低转速。
+    if (not state["in_low"] and not state["low_range"]
+            and temp < p["target"] - 9.0 and state["rpm"] <= fan_min + 100):
         state["cool"] += 1
         if state["cool"] >= RELEASE_HOLD:
             set_auto("(temp=%.1f stable)" % temp)

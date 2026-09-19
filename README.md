@@ -33,6 +33,7 @@ Fan utilities have existed for years. They give you a slider, or a static "at X 
 - 🔮 **Reacts before heat arrives** — whole-system power draw ≈ heat output, so a power spike (a build starts, an LLM loads) raises fan speed *immediately*, not after the die warms up
 - 🧠 **Learns your machine** — the power→RPM→cooling relationship is measured at steady state, persisted, and keeps improving the longer it runs; two Macs end up with two different controllers
 - 🌊 **Glides, never howls** — PI feedback converges on the exact equilibrium RPM and slew-rate limiting caps every change, so speed transitions stay below the ear's radar
+- 🔇 **Can go below the vendor minimum — or stop entirely** — the SMC's advertised floor (2317 RPM here) turns out to be advisory, not enforced. With headroom and a light load, Fanctl drives the fans down to their true spin floor or stops them outright; any warmth and they return to the normal range immediately
 - 🍃 **Steps aside on battery** — releases control and stops sampling entirely; zero battery cost
 - 🆓 **Free and open source** — MIT, no Pro tier, no subscription, ~2,600 lines you can audit in one sitting
 

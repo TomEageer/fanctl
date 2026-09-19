@@ -137,7 +137,10 @@ static int cmd_set(float rpm) {
         snprintf(k, 5, "F%dMx", i); if (smc_read(k, &v) == kIOReturnSuccess) mx = val_as_float(&v);
         float target = rpm;
         if (mx > 0 && target > mx) target = mx;      /* 永不超过硬件上限 */
-        if (mn > 0 && target < mn) target = mn;      /* 永不低于硬件下限：手动模式没有比自动更低的余地 */
+        if (target < 0) target = 0;
+        /* 不再强制抬到 F%dMn：实测（M4 Pro，标称最低 2317）固件并不强制该下限——
+           写 1300/1800 精确跟随，写 0 完全停转。下限是否放开由守护进程按温度裕度与
+           负载判定（见 fanctld 的低转区逻辑），此处只做硬件量程与非负校验。 */
         /* 模式键只在需要改变时写：高频重复写 F%dMd 会把 SMC 顶进保护态
            （读出 3 = 系统接管，此后所有写入被拒）。目标转速键可安全高频写。 */
         snprintf(k, 5, "F%dMd", i);

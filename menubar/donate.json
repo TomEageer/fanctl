@@ -24,23 +24,23 @@
   "crypto": [
     {
       "label": "USDT/USDC · TRON (TRC20)",
-      "address": ""
+      "address": "TEyv26kS6j8Ak3eK2vqFkPt3ihDBy4n9tp"
     },
     {
       "label": "USDT/USDC · Base",
-      "address": ""
+      "address": "0x36fadE754475C285b98E61DE8A27B60A39F0B176"
     },
     {
       "label": "USDC · Solana",
-      "address": ""
+      "address": "9ZcKsp1si2kmGsdTGfLjXtwJkE2DMa8tW5cQJqBsH6pR"
     },
     {
       "label": "ETH · Ethereum/Base/Arbitrum",
-      "address": ""
+      "address": "0x36fadE754475C285b98E61DE8A27B60A39F0B176"
     },
     {
-      "label": "BTC · Bitcoin",
-      "address": ""
+      "label": "BTC · Bitcoin (Taproot, bc1p)",
+      "address": "bc1php3mhev3rlvc48csa5p4ut5p9sargx7pt08xy3ryn5c6yycya6pq8azx5p"
     }
   ]
 }

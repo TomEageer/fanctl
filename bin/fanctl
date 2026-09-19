@@ -49,6 +49,7 @@ PY
   max)    send max ;;
   set)    send "set ${2:-4000}" ;;
   reset)  send resetmodel ;;
+  lowrange) case "${2:-}" in on|off) send "lowrange $2" ;; *) echo "用法: fanctl lowrange on|off"; exit 2;; esac ;;
   auto)   sudo $LIBEXEC/smcfan auto ;;
   probe)  $LIBEXEC/smcfan probe ;;
   log)    tail -20 /var/log/fanctl.log ;;
@@ -61,6 +62,7 @@ PY
   set <rpm> | max     手动定速 / 最大转速
   pause | resume      交还系统调度 / 恢复智能调速
   reset               重置自学习模型
+  lowrange on|off     允许/禁止低于标称最低转速（含完全停转）
   probe | log         风扇量程 / 最近日志
   start | stop | auto | uninstall
 EOF

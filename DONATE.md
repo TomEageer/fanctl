@@ -22,11 +22,11 @@ Fanctl 免费开源（MIT），没有广告、没有埋点、没有付费版。�
 
 | Asset / Chain | Address |
 |---|---|
-| USDT / USDC · TRON (TRC20) | `TODO` |
-| USDT / USDC · Base | `TODO` |
-| USDC · Solana | `TODO` |
-| ETH · Ethereum / Base / Arbitrum | `TODO` |
-| BTC · Bitcoin | `TODO` |
+| USDT / USDC · TRON (TRC20) | `TEyv26kS6j8Ak3eK2vqFkPt3ihDBy4n9tp` |
+| USDT / USDC · Base | `0x36fadE754475C285b98E61DE8A27B60A39F0B176` |
+| USDC · Solana | `9ZcKsp1si2kmGsdTGfLjXtwJkE2DMa8tW5cQJqBsH6pR` |
+| ETH · Ethereum / Base / Arbitrum | `0x36fadE754475C285b98E61DE8A27B60A39F0B176` |
+| BTC · Bitcoin (Taproot, bc1p) | `bc1php3mhev3rlvc48csa5p4ut5p9sargx7pt08xy3ryn5c6yycya6pq8azx5p` |
 
 ---
 
