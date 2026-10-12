@@ -5,7 +5,7 @@
  *   FNum (ui8 ) 风扇数量
  *   F%dAc (flt) 实际转速     F%dTg (flt) 目标转速
  *   F%dMn (flt) 最低转速     F%dMx (flt) 最高转速
- *   F%dMd (ui8) 模式 0=系统自动 1=手动
+ *   F%dMd / F%dmd (ui8) 模式 0=系统自动 1=手动（M5 Max 使用小写 md）
  * 用法:
  *   smcfan probe            列出所有风扇状态
  *   smcfan set <rpm>        全部风扇手动定速（写 Md=1 + Tg）
@@ -112,6 +112,16 @@ static int fan_count(void) {
     return v.bytes[0];
 }
 
+static kern_return_t read_fan_mode(int fan, char key[5], SMCVal_t *val) {
+    snprintf(key, 5, "F%dMd", fan);
+    kern_return_t kr = smc_read(key, val);
+    if (kr == kIOReturnNotFound) {
+        key[2] = 'm';  /* M5 Max 使用 F%dmd；读写使用探测到的同一个键。 */
+        kr = smc_read(key, val);
+    }
+    return kr;
+}
+
 static int cmd_probe(void) {
     int n = fan_count();
     printf("fans=%d\n", n);
@@ -121,9 +131,9 @@ static int cmd_probe(void) {
         snprintf(k, 5, "F%dTg", i); if (smc_read(k, &v) == kIOReturnSuccess) tg = val_as_float(&v);
         snprintf(k, 5, "F%dMn", i); if (smc_read(k, &v) == kIOReturnSuccess) mn = val_as_float(&v);
         snprintf(k, 5, "F%dMx", i); if (smc_read(k, &v) == kIOReturnSuccess) mx = val_as_float(&v);
-        snprintf(k, 5, "F%dMd", i); if (smc_read(k, &v) == kIOReturnSuccess) md = v.bytes[0];
-        printf("fan%d actual=%.0f target=%.0f min=%.0f max=%.0f mode=%s\n",
-               i, ac, tg, mn, mx, md == 1 ? "manual" : md == 0 ? "auto" : "?");
+        if (read_fan_mode(i, k, &v) == kIOReturnSuccess) md = v.bytes[0];
+        printf("fan%d actual=%.0f target=%.0f min=%.0f max=%.0f mode=%s mode_key=%s\n",
+               i, ac, tg, mn, mx, md == 1 ? "manual" : md == 0 ? "auto" : "?", k);
     }
     return 0;
 }
@@ -141,11 +151,10 @@ static int cmd_set(float rpm) {
         /* 不再强制抬到 F%dMn：实测（M4 Pro，标称最低 2317）固件并不强制该下限——
            写 1300/1800 精确跟随，写 0 完全停转。下限是否放开由守护进程按温度裕度与
            负载判定（见 fanctld 的低转区逻辑），此处只做硬件量程与非负校验。 */
-        /* 模式键只在需要改变时写：高频重复写 F%dMd 会把 SMC 顶进保护态
+        /* 模式键只在需要改变时写：高频重复写模式键会把 SMC 顶进保护态
            （读出 3 = 系统接管，此后所有写入被拒）。目标转速键可安全高频写。 */
-        snprintf(k, 5, "F%dMd", i);
         int md = -1;
-        if (smc_read(k, &v) == kIOReturnSuccess) md = v.bytes[0];
+        if (read_fan_mode(i, k, &v) == kIOReturnSuccess) md = v.bytes[0];
         if (md != 0 && md != 1) { fprintf(stderr, "error: %s=%d (system override)\n", k, md); return 3; }
         if (md != 1) {
             unsigned char one = 1;
@@ -163,8 +172,10 @@ static int cmd_auto(void) {
     int rc = 0;
     for (int i = 0; i < n; i++) {
         char k[5]; unsigned char zero = 0; SMCVal_t v;
-        snprintf(k, 5, "F%dMd", i);
-        if (smc_read(k, &v) == kIOReturnSuccess && v.bytes[0] == 0) { printf("fan%d already auto\n", i); continue; }
+        if (read_fan_mode(i, k, &v) != kIOReturnSuccess) {
+            fprintf(stderr, "error: read %s failed\n", k); rc = 1; continue;
+        }
+        if (v.bytes[0] == 0) { printf("fan%d already auto\n", i); continue; }
         if (smc_write(k, &zero, 1) != kIOReturnSuccess) { fprintf(stderr, "error: restore %s failed\n", k); rc = 1; }
         else printf("fan%d -> auto\n", i);
     }

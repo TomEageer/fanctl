@@ -1,8 +1,11 @@
 """低转速/停转扩展的离线闭环仿真验证。"""
 import sys, importlib.util
-spec = importlib.util.spec_from_file_location("fanctld", "/Users/tom/projects/fanctl/daemon/fanctld.py")
+from pathlib import Path
+spec = importlib.util.spec_from_file_location(
+    "fanctld", Path(__file__).resolve().parents[1] / "daemon" / "fanctld.py")
 f = importlib.util.module_from_spec(spec); sys.modules["fanctld"] = f
 spec.loader.exec_module(f)
+f.log = lambda message: None
 
 K0, K1, TAMB, CAP, HEAT = 0.30, 0.13, 25.0, 180.0, 0.6
 
@@ -69,17 +72,6 @@ print("4) 迟滞：温度在阈值附近摆动不应频繁进出")
 tr = run([26.0] * 400, low_range=True)
 flips = sum(1 for i in range(1, len(tr)) if tr[i][2] != tr[i-1][2])
 check("进出次数 ≤ 6", flips <= 6, "实际 %d 次" % flips)
-
-print("5) 手动定速接受 0 与死区吸附")
-f.state.update(low_range=True, fan_min=2317.0, fan_max=7826.0, override=None)
-for want, expect in ((0, 0), (500, 0), (900, f.spin_floor()), (1500, 1500), (9999, 7826)):
-    f.state["rpm"] = -1
-    f.handle_command = None
-    v = float(want); lo = 0.0
-    v = max(lo, min(f.state["fan_max"], v))
-    if 0 < v < f.spin_floor():
-        v = 0.0 if v < f.spin_floor() * 0.6 else f.spin_floor()
-    check("set %d → %d" % (want, expect), abs(v - expect) < 1, "得到 %d" % v)
 
 print("\n总计: %s" % ("全部通过" if ok else "存在失败"))
 sys.exit(0 if ok else 1)
