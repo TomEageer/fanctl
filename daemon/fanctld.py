@@ -112,6 +112,7 @@ state = {
     "w_slow": 0.0, "w_ff": 0.0, "temps": [], "trend": 0.0, "last_temp": None,
     "profile": "balanced", "gains": {}, "model_dirty": False, "model_saved": 0.0,
     "fan_min": FAN_MIN_DEFAULT, "fan_max": FAN_MAX_DEFAULT, "fans": 0,
+    "fan_mode_key": None,
     "ticks": 0, "hist_n": 0, "watts_good": None, "tm": None, "machine": None,
     "low_range": False, "in_low": False,
 }
@@ -187,6 +188,10 @@ def probe_fans():
     r = smcfan("probe")
     if not r or r.returncode != 0:
         return False
+    mode_key = re.search(r"fan0\b[^\n]*\bmode_key=(F0(?:Md|md))\b", r.stdout)
+    if not mode_key:
+        return False
+    state["fan_mode_key"] = mode_key.group(1)
     m = re.search(r"fans=(\d+)", r.stdout)
     state["fans"] = int(m.group(1)) if m else 0
     lo = re.search(r"min=([0-9.]+)", r.stdout)
@@ -207,7 +212,7 @@ def read_fan_field(key):
 
 
 def smc_manual_mode():
-    v = read_fan_field("F0Md")
+    v = read_fan_field(state["fan_mode_key"])
     return None if v is None else int(v) == 1
 
 
@@ -221,8 +226,8 @@ def set_auto(reason=""):
 
 def smc_backoff(reason):
     """写入失败退避。持续失败常见两类：①睡眠唤醒后 SMC 短时锁定风扇键（写入返回 -126）；
-    ②模式键 F0Md 短时间被高频翻转（如服务反复重启，每次重启=交还+接管各写一次）触发
-    SMC 保护态（F0Md 读出 3）。均无法由软件立即解除：前者稍候自动恢复，后者多为一两分钟
+    ②模式键短时间被高频翻转（如服务反复重启，每次重启=交还+接管各写一次）触发
+    SMC 保护态（模式读出 3）。均无法由软件立即解除：前者稍候自动恢复，后者多为一两分钟
     内自愈、持续过久需重启整机；期间仍继续温度监控。（2026-08-08 实证：整机两天未睡眠、
     温度 52-55°C 时段照样出现 F0Md=3，与唤醒无关、与温度高低无关，与重启频率强相关）"""
     n = state["smc_fails"] = state.get("smc_fails", 0) + 1
@@ -231,13 +236,13 @@ def smc_backoff(reason):
     if state.get("smc_first_fail") is None:
         state["smc_first_fail"] = time.time()
     stuck = time.time() - state["smc_first_fail"]
-    mode = read_fan_field("F0Md")
+    mode = read_fan_field(state["fan_mode_key"])
     # 分级：刚开始拿不到控制权多半是唤醒/系统临时接管，属正常；持续十分钟才算真故障
     state["err"] = ("fan_control_locked" if stuck > LOCK_ESCALATE
                     else "fan_control_yield")
     if n <= 3 or n % 20 == 0:
-        log("fan write rejected (%s), F0Md=%s, backing off %.0fs (fail #%d, stuck %.0fmin)"
-            % (reason, mode, wait, n, stuck / 60))
+        log("fan write rejected (%s), %s=%s, backing off %.0fs (fail #%d, stuck %.0fmin)"
+            % (reason, state["fan_mode_key"], mode, wait, n, stuck / 60))
 
 
 def smc_ok():
@@ -248,7 +253,7 @@ def write_rpm(rpm):
     if not smc_ok():
         return False
     r = smcfan("set", str(int(rpm)))
-    if r and r.returncode == 3:              # 系统接管（F0Md 非 0/1）：不与之争抢
+    if r and r.returncode == 3:              # 系统接管（模式非 0/1）：不与之争抢
         n = state["smc_fails"] = state.get("smc_fails", 0) + 1
         if state.get("smc_first_fail") is None:
             state["smc_first_fail"] = time.time()
@@ -257,8 +262,8 @@ def write_rpm(rpm):
                         if time.time() - state["smc_first_fail"] > LOCK_ESCALATE
                         else "fan_control_yield")
         if n <= 2 or n % 20 == 0:
-            log("system holds fan control (F0Md=%s) — standing by"
-                % read_fan_field("F0Md"))
+            log("system holds fan control (%s=%s) — standing by"
+                % (state["fan_mode_key"], read_fan_field(state["fan_mode_key"])))
         return False
     if r and r.returncode == 0:
         state["written"] = rpm

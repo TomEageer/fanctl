@@ -87,7 +87,7 @@ sudo ./install.sh
 
 | 组件 | 语言 | 职责 |
 |---|---|---|
-| `smcfan` | C，约 200 行 | 读写 AppleSMC 风扇寄存器（`F0Md`/`F0Tg`）——与商业风扇工具同一条通道 |
+| `smcfan` | C，约 200 行 | 读写 AppleSMC 风扇寄存器（探测 `F0Md`/`F0md` 模式键，`F0Tg` 为目标转速）——与商业风扇工具同一条通道 |
 | `fanctld` | Python，约 700 行 | root LaunchDaemon，约 3 秒一轮控制循环 |
 | `Fanctl.app` | Swift | 菜单栏界面——只读 daemon 写出的状态文件，UI 与 SMC 永不抢锁 |
 
@@ -158,6 +158,7 @@ sudo ./install.sh
 ## 系统要求
 
 - Apple Silicon Mac（M1 → M4 全系），macOS 13+
+- M5 Max：已在 MacBook Pro（Mac17,6）、macOS 27.0.1 上验证控扇；其他 M5 机型尚未实测。
 - 在 M4 Pro 上开发与测试；从源码构建需要 Xcode Command Line Tools
 
 ## 赞赏

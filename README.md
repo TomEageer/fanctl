@@ -88,7 +88,7 @@ Three small programs, each doing one job:
 
 | Component | Language | Role |
 |---|---|---|
-| `smcfan` | C, ~200 lines | Talks to the AppleSMC fan registers (`F0Md`/`F0Tg`) — the same channel commercial utilities use |
+| `smcfan` | C, ~200 lines | Talks to the AppleSMC fan registers (probed `F0Md`/`F0md` mode key and `F0Tg` target) — the same channel commercial utilities use |
 | `fanctld` | Python, ~700 lines | Root LaunchDaemon running the control loop every ~3 s |
 | `Fanctl.app` | Swift | Menu bar UI — only reads status files the daemon writes; UI and SMC never contend |
 
@@ -159,6 +159,7 @@ Writing SMC fan registers requires root. The privileged part is a ~700-line Pyth
 ## Requirements
 
 - Apple Silicon Mac (M1 → M4 family), macOS 13+
+- M5 Max fan control is verified on MacBook Pro (Mac17,6), macOS 27.0.1. Other M5 models have not been tested.
 - Developed and tested on M4 Pro; building from source needs Xcode Command Line Tools
 
 ## Support
