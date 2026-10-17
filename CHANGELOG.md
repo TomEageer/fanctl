@@ -8,17 +8,21 @@ available as a git tag.
 
 ---
 
-## Unreleased — M5 Max fan control · M5 Max 控扇适配
+## 2.7.1 — M5 Max fan control · M5 Max 控扇适配
 
 **EN**
 - Probe the legacy `F%dMd` mode key first and use `F%dmd` only when the legacy key is absent. Monitoring, manual control, and restoring automatic control use the same discovered key; firmware-owned modes remain protected.
 - Include `mode_key` in `smcfan probe` output and let the daemon use it for ownership checks and backoff diagnostics instead of assuming `F0Md`.
 - Verified on MacBook Pro M5 Max (Mac17,6), macOS 27.0.1. Regression coverage exercises loss and reacquisition of control, plus firmware override protection, for both key variants. Other M5 models have not been tested.
+- Restoring automatic control now still attempts the write when reading the mode key fails (e.g. the SMC briefly locking fan keys after wake). It is the safety path on exit and should not give up just because a read failed.
+- Thanks to [@Zixiaobowen](https://github.com/Zixiaobowen) for the M5 Max fix (#1) — the project's first outside contribution.
 
 **中文**
 - 优先探测旧版 `F%dMd` 模式键，仅在该键不存在时使用 `F%dmd`；监控、手动调速和恢复自动控制均使用探测到的同一个键，保留系统接管模式的保护。
 - `smcfan probe` 输出 `mode_key`，守护进程据此进行控制权检测和退避诊断，不再固定读取 `F0Md`。
 - 已在 MacBook Pro M5 Max（Mac17,6）、macOS 27.0.1 上验证；回归测试覆盖两种键名下的控制权丢失、重新接管和系统保护。其他 M5 机型尚未实测。
+- 恢复自动控制时，即使读取模式键失败（如唤醒后 SMC 短时锁定风扇键）也照样尝试写入。这是退出时的安全兜底，不能因为读不到就放弃交还控制权。
+- 感谢 [@Zixiaobowen](https://github.com/Zixiaobowen) 贡献 M5 Max 适配（#1），这是本项目第一个外部贡献。
 
 ## 2.6 — Equilibrium-map feedforward · 平衡转速映射前馈
 

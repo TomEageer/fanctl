@@ -172,10 +172,12 @@ static int cmd_auto(void) {
     int rc = 0;
     for (int i = 0; i < n; i++) {
         char k[5]; unsigned char zero = 0; SMCVal_t v;
-        if (read_fan_mode(i, k, &v) != kIOReturnSuccess) {
-            fprintf(stderr, "error: read %s failed\n", k); rc = 1; continue;
+        /* 还原自动是退出时的安全兜底：读失败（如唤醒后 SMC 短时锁定）也照样尝试写 0，
+           不能因为读不到就放弃交还控制权。只有"读到了且已经是 0"才跳过。
+           读失败时 k 仍是正确的键名：read_fan_mode 只在"键不存在"时才换小写拼法。 */
+        if (read_fan_mode(i, k, &v) == kIOReturnSuccess && v.bytes[0] == 0) {
+            printf("fan%d already auto\n", i); continue;
         }
-        if (v.bytes[0] == 0) { printf("fan%d already auto\n", i); continue; }
         if (smc_write(k, &zero, 1) != kIOReturnSuccess) { fprintf(stderr, "error: restore %s failed\n", k); rc = 1; }
         else printf("fan%d -> auto\n", i);
     }
